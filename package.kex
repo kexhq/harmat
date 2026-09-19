@@ -1,0 +1,9 @@
+package "harmat" do
+  version("0.1.0")
+  description("A drizzle-like typed query builder for Kex")
+  kex(">= 0.3.0")
+
+  # Project commands, run as "tey NAME" and listed by "tey help":
+  # command("bench", run: "script/bench.kex", description: "Run the benchmarks")
+
+end

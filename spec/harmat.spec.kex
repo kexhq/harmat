@@ -1,0 +1,61 @@
+using Harmat.Schema, only: [table, integer, text, optInteger, optText]
+using Harmat.Query, only: [select, sql]
+
+describe "Harmat.Query builder" do
+  it "renders a static query with no params" do
+    let q = select(["name", "email"]).from(table("users")).emit()
+    Assert.equal(q.statement, "SELECT name, email FROM users")
+    Assert.equal(q.params, [])
+  end
+
+  it "binds runtime values as params" do
+    let userId = 42
+    let q = select(["name"]).from(table("users")).where([integer("id").eqTo(userId)]).emit()
+    Assert.equal(q.statement, "SELECT name FROM users WHERE id = ?")
+    Assert.equal(q.params, [42])
+  end
+
+  it "renders IS NULL for nullable columns" do
+    let q = select(["name"]).from(table("users")).where([optInteger("age").isNull]).emit()
+    Assert.equal(q.statement, "SELECT name FROM users WHERE age IS NULL")
+    Assert.equal(q.params, [])
+  end
+
+  it "compares nullable columns with plain values" do
+    let q = select(["name"]).from(table("users")).where([optInteger("age").eqTo(30)]).emit()
+    Assert.equal(q.statement, "SELECT name FROM users WHERE age = ?")
+    Assert.equal(q.params, [30])
+  end
+
+  it "renders order and limit" do
+    let q = select(["name"]).from(table("users")).orderBy("name").limit(10).emit()
+    Assert.equal(q.statement, "SELECT name FROM users ORDER BY name LIMIT ?")
+    Assert.equal(q.params, [10])
+  end
+
+  it "compares text columns to strings" do
+    let q = select(["id"]).from(table("users")).where([text("name").eqTo("ada")]).emit()
+    Assert.equal(q.statement, "SELECT id FROM users WHERE name = ?")
+    Assert.equal(q.params, ["ada"])
+  end
+end
+
+describe "Harmat.Query sql tag" do
+  it "passes static text through" do
+    let q = sql`SELECT name FROM users WHERE id = ?`
+    Assert.equal(q.statement, "SELECT name FROM users WHERE id = ?")
+  end
+
+  it "splices holes as params" do
+    let age = 30
+    let q = sql$`UPDATE users SET age = ${age} WHERE id = ${1}`
+    Assert.equal(q.statement, "UPDATE users SET age = ? WHERE id = ?")
+    Assert.equal(q.params, [30, 1])
+  end
+
+  it "checks optText the same way" do
+    let q = select(["id"]).from(table("users")).where([optText("nick").eqTo("al")]).emit()
+    Assert.equal(q.statement, "SELECT id FROM users WHERE nick = ?")
+    Assert.equal(q.params, ["al"])
+  end
+end

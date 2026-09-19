@@ -1,0 +1,10 @@
+# Harmat — a drizzle-like query builder for Kex.
+#
+# Declare tables once (table-first schema DSL generating row records),
+# build typed queries that collapse to static text at compile time,
+# run them through one ODBC boundary. Nullable columns are Optional
+# and only spell IS NULL; `= NULL` is inexpressible.
+module Harmat do
+  export Harmat.Schema
+  export Harmat.Query
+end

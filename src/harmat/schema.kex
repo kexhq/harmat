@@ -1,0 +1,78 @@
+# Harmat.Schema — typed column and table descriptors.
+#
+# One concrete record per column kind instead of a generic
+# Column<T>: the checker's record literals never unify with a
+# type parameter, phantom or concrete, so conditions are checked
+# through per-kind methods (age.eqTo(30)) rather than one generic
+# eq. Comparing an integer column to a string still fails the
+# build — at the method call, not in a phantom.
+#
+# Nullable kinds offer eqTo plus isNull. There is deliberately no
+# way to spell `= NULL`: Kex None == None is true, SQL
+# NULL = NULL is unknown, so the builder never renders one.
+
+module Harmat.Schema do
+  record IntColumn do
+    label : String
+  end
+
+  record TextColumn do
+    label : String
+  end
+
+  record OptIntColumn do
+    label : String
+  end
+
+  record OptTextColumn do
+    label : String
+  end
+
+  record Table do
+    label : String
+  end
+
+  # One WHERE fragment: an equality with a bound value, or IS NULL.
+  type Cond = EqCond(String, Any) | NullCond(String)
+
+  integer : String -> IntColumn
+  let integer(name: String) -> Harmat.Schema.IntColumn = IntColumn { label: name }
+
+  text : String -> TextColumn
+  let text(name: String) -> Harmat.Schema.TextColumn = TextColumn { label: name }
+
+  optInteger : String -> OptIntColumn
+  let optInteger(name: String) -> Harmat.Schema.OptIntColumn = OptIntColumn { label: name }
+
+  optText : String -> OptTextColumn
+  let optText(name: String) -> Harmat.Schema.OptTextColumn = OptTextColumn { label: name }
+
+  table : String -> Table
+  let table(name: String) -> Harmat.Schema.Table = Table { label: name }
+
+  make IntColumn do
+    eqTo :> Integer -> Cond
+    let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+  end
+
+  make TextColumn do
+    eqTo :> String -> Cond
+    let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+  end
+
+  make OptIntColumn do
+    eqTo :> Integer -> Cond
+    let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    isNull :> Cond
+    let isNull -> Harmat.Schema.Cond = NullCond(@label)
+  end
+
+  make OptTextColumn do
+    eqTo :> String -> Cond
+    let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    isNull :> Cond
+    let isNull -> Harmat.Schema.Cond = NullCond(@label)
+  end
+end
