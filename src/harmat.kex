@@ -12,5 +12,5 @@ module Harmat do
   export Harmat.Database
   export Harmat.Migration
   export Harmat.Table
-  export Harmat.Repository
+  export Harmat.Db
 end

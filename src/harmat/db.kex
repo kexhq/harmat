@@ -1,0 +1,235 @@
+# Harmat.Db — queries the way Drizzle writes them.
+#
+#   let db = Harmat.Db.over(gateway)
+#
+#   db.select().from(users).where(eq(Users.email, email)).all
+#   db.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
+#   db.insert(users).values({id: id, email: email}).run
+#   db.update(users).set({email: email}).where(eq(Users.id, id)).run
+#   db.delete(users).where(eq(Users.id, id)).run
+#
+# `users` is a table declared with `Harmat.Table`; `Users.id` is one of its
+# typed column handles, so `eq(Users.id, 42)` on a text column does not
+# build. A row comes back as a map from column name to text.
+#
+# Nothing is sent until a builder is finished: `all`, `first` or `run`.
+#
+# `db.within(condition)` gives a handle whose every statement carries that
+# condition — reads, updates and deletes alike. A handle confined to one
+# owner cannot touch another's rows, whatever the query built on it says.
+module Harmat.Db
+
+using Harmat.Schema, only: [Cond, EqCond, NullCond, TextColumn, IntColumn, Value]
+using Harmat.Database, only: [Statement]
+using Harmat.Table, only: [Definition]
+using Harmat.Migration, only: [Column, Storage, Characters, Flag, named]
+
+# How statements reach a database: a pair of functions rather than a
+# connection, so that a `Db` can be used from any process (an ODBC connection
+# answers only the process that opened it) and so that a spec can hand it a
+# gateway that records statements instead of running them.
+record Gateway do
+  # Runs a statement that changes rows; how many it changed.
+  run : Statement -> Result<Integer, String>
+  # Runs a SELECT; its rows, each as its cells in column order.
+  ask : Statement -> Result<[[String]], String>
+end
+
+# A gateway straight onto an open connection, for code that runs in the
+# process that owns it.
+direct : Any -> Gateway
+foul direct(connection) = Gateway {
+  run: do |statement| Harmat.Database.execute(connection, statement) end,
+  ask: do |statement| Harmat.Database.query(connection, statement) end
+}
+
+# A database, as queries see it.
+record Db do
+  gateway : Gateway
+  confines : [Cond] = []
+end
+
+# The handle queries start from.
+over : Gateway -> Db
+let over(gateway) = Db { gateway: gateway }
+
+record Select do
+  db : Db
+  columns : [String] = []
+  source : Definition? = None
+  conditions : [Cond] = []
+  order : [String] = []
+  cap : Integer? = None
+end
+
+record Insert do
+  db : Db
+  target : Definition
+  row : {Atom: Any} = {}
+end
+
+record Update do
+  db : Db
+  target : Definition
+  changes : {Atom: Any} = {}
+  conditions : [Cond] = []
+end
+
+record Delete do
+  db : Db
+  target : Definition
+  conditions : [Cond] = []
+end
+
+# --- Conditions -------------------------------------------------------------
+
+# The column equals the value. One function per column type, so the value's
+# type is checked against the column's.
+let eq(column: TextColumn, value: String) -> Cond = EqCond(column.label, value)
+let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
+
+# --- Starting a query -------------------------------------------------------
+
+make Db do
+  # A handle whose every statement also carries `condition`.
+  let within(condition: Cond) -> Db = Db { gateway: @gateway, confines: @confines + [condition] }
+
+  # Every column of the table named in `from`.
+  let select() -> Select = Select { db: this }
+
+  # Only these columns.
+  let select(columns: [Atom]) -> Select = Select { db: this, columns: columns.map { |column| named(column) } }
+
+  let insert(target: Definition) -> Insert = Insert { db: this, target: target }
+
+  let update(target: Definition) -> Update = Update { db: this, target: target }
+
+  let delete(target: Definition) -> Delete = Delete { db: this, target: target }
+end
+
+make Select do
+  let from(source: Definition) -> Select = Select { ...this, source: Just(source) }
+
+  # Narrows the rows; several `where`s all have to hold.
+  let where(condition: Cond) -> Select = Select { ...this, conditions: @conditions + [condition] }
+
+  let orderBy(columns: [Atom]) -> Select = Select { ...this, order: columns.map { |column| named(column) } }
+
+  let limit(count: Integer) -> Select = Select { ...this, cap: Just(count) }
+
+  # The statement this query is.
+  let statement -> Result<Statement, String> do
+    match @source do
+      None => Error("select() was not given a table: add .from(table)")
+      Just(source) => do
+        let columns = @columns.empty? then source.names else @columns
+        let chosen = Harmat.Database.selecting(source.table, columns, @db.confines + @conditions, @order)
+        match @cap do
+          Just(count) => Ok(Statement { statement: "${chosen.statement} LIMIT ${count}", params: chosen.params })
+          None => Ok(chosen)
+        end
+      end
+    end
+  end
+
+  # Runs the query: every row, as a map from column name to text.
+  foul all -> Result<[{String: String}], String> do
+    match this.statement do
+      Error(reason) => return Error(reason)
+      Ok(built) => do
+        let ask = @db.gateway.ask
+        let names = @columns.empty? then @source.map { |source| source.names }.or([]) else @columns
+        return ask(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
+      end
+    end
+  end
+
+  # Runs the query for one row: the first, or `None`.
+  foul first -> Result<{String: String}?, String> do
+    return this.limit(1).all.map { |rows| rows.first }
+  end
+end
+
+make Insert do
+  # The row to insert, by column name: `{id: id, email: email}`.
+  let values(row: {Atom: Any}) -> Insert = Insert { ...this, row: row }
+
+  let statement -> Result<Statement, String> do
+    assigned(@target, @row).map { |fields| Harmat.Database.inserting(@target.table, fields) }
+  end
+
+  # Runs the insert; the number of rows inserted.
+  foul run -> Result<Integer, String> do
+    match this.statement do
+      Error(reason) => return Error(reason)
+      Ok(built) => do
+        let execute = @db.gateway.run
+        return execute(built)
+      end
+    end
+  end
+end
+
+make Update do
+  # The columns to change, by name: `{email: email}`.
+  let set(changes: {Atom: Any}) -> Update = Update { ...this, changes: changes }
+
+  let where(condition: Cond) -> Update = Update { ...this, conditions: @conditions + [condition] }
+
+  let statement -> Result<Statement, String> do
+    assigned(@target, @changes).map { |fields| Harmat.Database.updating(@target.table, fields, @db.confines + @conditions) }
+  end
+
+  # Runs the update; the number of rows it changed.
+  foul run -> Result<Integer, String> do
+    match this.statement do
+      Error(reason) => return Error(reason)
+      Ok(built) => do
+        let execute = @db.gateway.run
+        return execute(built)
+      end
+    end
+  end
+end
+
+make Delete do
+  let where(condition: Cond) -> Delete = Delete { ...this, conditions: @conditions + [condition] }
+
+  let statement -> Statement = Harmat.Database.deleting(@target.table, @db.confines + @conditions)
+
+  # Runs the delete; the number of rows it removed.
+  foul run -> Result<Integer, String> do
+    let execute = @db.gateway.run
+    return execute(this.statement)
+  end
+end
+
+private do
+  keyed : [String] -> [String] -> {String: String}
+  let keyed(names, cells) do
+    names.zip(cells).reduce({}) { |row, pair| match pair do (name, cell) => row.put(name, cell) end }
+  end
+
+  # A map of column name to value as bound fields, each written the way its
+  # declared column stores it. A name the table does not declare is an error
+  # here rather than one from the database.
+  assigned : Definition -> {Atom: Any} -> Result<[(String, Value)], String>
+  let assigned(target, given) do
+    given.entries.reduce(Ok([])) { |fields, entry|
+      match (fields, entry) do
+        (Error(reason), _) => Error(reason)
+        (Ok(done), (key, value)) => match target.columns.find { |column| column.label == named(key) } do
+          None => Error("${target.label} has no column ${named(key)}")
+          Just(column) => Ok(done + [(column.label, stored(column.storage, value))])
+        end
+      end
+    }
+  end
+
+  # `Whole` is both a stored value in Harmat.Schema and a column's storage
+  # in Harmat.Migration, so the values are built by their full names.
+  stored : Storage -> Any -> Value
+  let stored(Characters, value) = Harmat.Schema.Text("${value}")
+  let stored(Flag, value) = Harmat.Schema.Text(value == true then "TRUE" else "FALSE")
+  let stored(storage, value) = Harmat.Schema.Whole(value)
+end
