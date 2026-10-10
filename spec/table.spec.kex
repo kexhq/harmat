@@ -1,0 +1,57 @@
+using Harmat.Migration, only: [Migration, migration, createTable, addColumn, removeColumn, addIndex, string, bigint]
+using Harmat.Table, only: [Definition, define]
+
+let users = define "users" do
+  string("id").primaryKey
+  string("email")
+  bigint("credit").withDefault(0)
+end
+
+let createUsers = migration("create_users") do
+  createTable "users" do
+    string("id").primaryKey
+    string("email")
+  end
+  addIndex("users", ["email"])
+end
+
+let addCredit = migration("add_credit", follows: "create_users") do
+  addColumn("users", bigint("credit").withDefault(0))
+end
+
+describe("Harmat.Table") do
+  it("names its table and columns") do
+    Assert.equal(users.table.label, "users")
+    Assert.equal(users.names, ["id", "email", "credit"])
+    Assert.equal(users.whole("credit").storing(5), ("credit", Harmat.Schema.Whole(5)))
+    Assert.equal(users.text("email").eqTo("a@b.c"), Harmat.Schema.EqCond("email", "a@b.c"))
+  end
+
+  it("replays a history into the tables it leaves behind") do
+    let dropEmail = migration("drop_email", follows: "add_credit") do
+      removeColumn("users", string("email"))
+    end
+    let tables : [Definition] = Harmat.Table.replayed([dropEmail, addCredit, createUsers]).try
+    Assert.equal(tables.map { |definition| definition.names }, [["id", "credit"]])
+  end
+
+  it("finds no drift when the migrations produce what is declared") do
+    Assert.equal(Harmat.Table.drift([users], [createUsers, addCredit]), [])
+  end
+
+  it("says what was declared but never migrated, and the reverse") do
+    Assert.equal(Harmat.Table.drift([users], [createUsers]), ["users.credit is declared but no migration adds it"])
+    Assert.equal(Harmat.Table.drift([], [createUsers]), ["table users is migrated but not declared"])
+    let accounts = define "accounts" do
+      string("id").primaryKey
+    end
+    Assert.equal(Harmat.Table.drift([users, accounts], [createUsers, addCredit]), ["table accounts is declared but no migration creates it"])
+  end
+
+  it("notices a column declared differently from how it was migrated") do
+    let generous = migration("add_credit", follows: "create_users") do
+      addColumn("users", bigint("credit").withDefault(100))
+    end
+    Assert.equal(Harmat.Table.drift([users], [createUsers, generous]), ["users.credit is declared differently from how it was migrated"])
+  end
+end

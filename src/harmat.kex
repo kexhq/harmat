@@ -2,9 +2,15 @@
 #
 # Declare tables once (table-first schema DSL generating row records),
 # build typed queries that collapse to static text at compile time,
-# run them through one ODBC boundary. Nullable columns are Optional
-# and only spell IS NULL; `= NULL` is inexpressible.
+# run them through one ODBC boundary (Harmat.Database) that reaches
+# SQLite and PostgreSQL alike, and keep the schema current with
+# Harmat.Migration. Nullable columns are Optional and only spell
+# IS NULL; `= NULL` is inexpressible.
 module Harmat do
   export Harmat.Schema
   export Harmat.Query
+  export Harmat.Database
+  export Harmat.Migration
+  export Harmat.Table
+  export Harmat.Repository
 end

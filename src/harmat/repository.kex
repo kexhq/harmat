@@ -1,0 +1,105 @@
+# Harmat.Repository — what every repository shares.
+#
+# A repository is a record holding a `Relation` — where its rows live and
+# which of them are its own — with the application's typed methods on top:
+#
+#   record UserRepository do
+#     relation : Relation
+#   end
+#
+#   let users(gateway: Gateway) -> UserRepository = UserRepository {
+#     relation: Relation { gateway: gateway, source: table, selection: ["id", "email"], identifier: id }
+#   }
+#
+#   make UserRepository do
+#     foul find(id: String) -> Result<User?, String> do
+#       return @relation.selectedOne(id).map { |row| row.flatMap { |cells| decoded(cells) } }
+#     end
+#   end
+#
+# `confines` is the part worth having in one place: conditions added to every
+# statement the relation issues. A relation confined to one owner cannot read,
+# rewrite or delete another's rows, whatever id it is handed, because no
+# method of it can leave the condition out.
+#
+# A `Gateway` is how statements reach a database. It is a pair of functions
+# rather than a connection so that a repository can be used from any process
+# (an ODBC connection answers only the process that opened it) and so that a
+# spec can hand it a gateway that records statements instead of running them.
+#
+# This would be a trait with default methods — `make UserRepository,
+# implement: Repository` — but a trait declared in one module cannot be
+# implemented from another yet, so the shared part is a record that
+# repositories hold rather than a trait they implement.
+module Harmat.Repository
+
+using Harmat.Schema, only: [Table, TextColumn, Cond, Value]
+using Harmat.Database, only: [Statement]
+
+# How statements reach a database.
+record Gateway do
+  # Runs a statement that changes rows; how many it changed.
+  run : Statement -> Result<Integer, String>
+  # Runs a SELECT; its rows, each as its cells in column order.
+  ask : Statement -> Result<[[String]], String>
+end
+
+# A gateway straight onto an open connection, for code that runs in the
+# process that owns it.
+direct : Any -> Gateway
+foul direct(connection) = Gateway {
+  run: do |statement| Harmat.Database.execute(connection, statement) end,
+  ask: do |statement| Harmat.Database.query(connection, statement) end
+}
+
+# A table's rows as one repository sees them.
+record Relation do
+  # How its statements reach the database.
+  gateway : Gateway
+  # The table its rows are in.
+  source : Table
+  # The columns it reads, in the order the repository's decoder expects.
+  selection : [String]
+  # The column that identifies one row.
+  identifier : TextColumn
+  # Conditions every statement carries.
+  confines : [Cond] = []
+end
+
+make Relation do
+  # The rows matching `conditions` (and `confines`), ordered.
+  foul selected(conditions: [Cond], order: [String]) -> Result<[[String]], String> do
+    let ask = @gateway.ask
+    return ask(Harmat.Database.selecting(@source, @selection, @confines + conditions, order))
+  end
+
+  # The row with this id, if it is one of this relation's.
+  foul selectedOne(id: String) -> Result<[String]?, String> do
+    return this.selected([@identifier.eqTo(id)], []).map { |rows| rows.first }
+  end
+
+  # Inserts one row. `confines` cannot be applied to an INSERT, so the values
+  # must themselves place the row inside them.
+  foul inserted(values: [(String, Value)]) -> Result<Integer, String> do
+    let run = @gateway.run
+    return run(Harmat.Database.inserting(@source, values))
+  end
+
+  # Rewrites the row with this id; how many rows that was (0 when it is not
+  # one of this relation's).
+  foul updated(id: String, values: [(String, Value)]) -> Result<Integer, String> do
+    return this.updatedWhere([@identifier.eqTo(id)], values)
+  end
+
+  # Rewrites every row matching `conditions` (and `confines`).
+  foul updatedWhere(conditions: [Cond], values: [(String, Value)]) -> Result<Integer, String> do
+    let run = @gateway.run
+    return run(Harmat.Database.updating(@source, values, @confines + conditions))
+  end
+
+  # Deletes the row with this id; whether there was one.
+  foul deleted(id: String) -> Result<Bool, String> do
+    let run = @gateway.run
+    return run(Harmat.Database.deleting(@source, @confines + [@identifier.eqTo(id)])).map { |count| count > 0 }
+  end
+end
