@@ -2,10 +2,10 @@ using Harmat.Migration, only: [string, bigint]
 using Harmat.Table, only: [Definition, define]
 using Harmat.Repository, only: [Gateway, Relation]
 
-let notes = define "notes" do
-  string("id").primaryKey
-  string("owner")
-  string("body")
+let notes = define :notes do
+  string(:id).primaryKey
+  string(:owner)
+  string(:body)
 end
 
 record NoteRepository do
@@ -17,8 +17,8 @@ let notesOf(database: Gateway, owner: String) -> NoteRepository = NoteRepository
     gateway: database,
     source: notes.table,
     selection: ["id", "body"],
-    identifier: notes.text("id"),
-    confines: [notes.text("owner").eqTo(owner)]
+    identifier: notes.text(:id),
+    confines: [notes.text(:owner).eqTo(owner)]
   }
 }
 
@@ -49,13 +49,13 @@ describe("Harmat.Repository statements") do
   end
 
   it("confines updates and deletes the same way") do
-    Assert.equal(relation.updated("n1", [notes.text("body").storing("hi")]), Error("UPDATE notes SET body = ? WHERE owner = ? AND id = ? [hi, ada, n1]"))
+    Assert.equal(relation.updated("n1", [notes.text(:body).storing("hi")]), Error("UPDATE notes SET body = ? WHERE owner = ? AND id = ? [hi, ada, n1]"))
     Assert.equal(relation.deleted("n1"), Error("DELETE FROM notes WHERE owner = ? AND id = ? [ada, n1]"))
-    Assert.equal(relation.updatedWhere([notes.text("body").eqTo("")], [notes.text("body").storing("-")]), Error("UPDATE notes SET body = ? WHERE owner = ? AND body = ? [-, ada, ]"))
+    Assert.equal(relation.updatedWhere([notes.text(:body).eqTo("")], [notes.text(:body).storing("-")]), Error("UPDATE notes SET body = ? WHERE owner = ? AND body = ? [-, ada, ]"))
   end
 
   it("inserts what it is given") do
-    Assert.equal(relation.inserted([notes.text("id").storing("n1"), notes.text("owner").storing("ada")]), Error("INSERT INTO notes (id, owner) VALUES (?, ?) [n1, ada]"))
+    Assert.equal(relation.inserted([notes.text(:id).storing("n1"), notes.text(:owner).storing("ada")]), Error("INSERT INTO notes (id, owner) VALUES (?, ?) [n1, ada]"))
   end
 end
 
@@ -69,13 +69,13 @@ describe("Harmat.Repository against a database") do
     let ada = notesOf(database, "ada")
     let bob = notesOf(database, "bob")
 
-    ada.relation.inserted([notes.text("id").storing("n1"), notes.text("owner").storing("ada"), notes.text("body").storing("hers")]).try
+    ada.relation.inserted([notes.text(:id).storing("n1"), notes.text(:owner).storing("ada"), notes.text(:body).storing("hers")]).try
     Assert.equal(ada.bodies, Ok(["hers"]))
     Assert.equal(bob.bodies, Ok([]))
     Assert.equal(bob.relation.selectedOne("n1"), Ok(None))
-    Assert.equal(bob.relation.updated("n1", [notes.text("body").storing("his")]), Ok(0))
+    Assert.equal(bob.relation.updated("n1", [notes.text(:body).storing("his")]), Ok(0))
     Assert.equal(bob.relation.deleted("n1"), Ok(false))
-    Assert.equal(ada.relation.updated("n1", [notes.text("body").storing("still hers")]), Ok(1))
+    Assert.equal(ada.relation.updated("n1", [notes.text(:body).storing("still hers")]), Ok(1))
     Assert.equal(ada.bodies, Ok(["still hers"]))
     Assert.equal(ada.relation.deleted("n1"), Ok(true))
     FS.File.delete(file)

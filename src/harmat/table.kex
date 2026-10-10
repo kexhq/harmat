@@ -2,16 +2,16 @@
 #
 # A table is declared once, with the same column words a migration uses:
 #
-#   let users = define "users" do
-#     string("id").primaryKey
-#     string("email")
-#     bigint("credit").withDefault(0)
+#   let users = define :users do
+#     string(:id).primaryKey
+#     string(:email)
+#     bigint(:credit).withDefault(0)
 #   end
 #
 # and its columns are then reached as typed handles for queries and writes:
 #
-#   let email = users.text("email")      # compares to and stores a String
-#   let credit = users.whole("credit")   # compares to and stores an Integer
+#   let email = users.text(:email)      # compares to and stores a String
+#   let credit = users.whole(:credit)   # compares to and stores an Integer
 #
 # The declaration is what the code believes; the migrations are what a
 # database actually gets. `drift` replays the migration history into the
@@ -36,11 +36,11 @@ end
 
 # Declares a table.
 #
-# @param label [String] the table's name in the database
+# @param label [Atom] the table's name in the database
 # @param columns [Block<[Column]>] its columns, as in `createTable`
 # @return [Definition] the declaration
-define : String -> Block<[Column]> -> Definition
-let define(label, columns) = Definition { label: label, columns: columns() }
+define : Atom -> Block<[Column]> -> Definition
+let define(label, columns) = Definition { label: Harmat.Migration.named(label), columns: columns() }
 
 make Definition do
   # The table, for `Harmat.Database` statements.
@@ -52,12 +52,12 @@ make Definition do
   let names = @columns.map { |column| column.label }
 
   # A handle on a text column.
-  text :> String -> TextColumn
-  let text(name) = Harmat.Schema.text(name)
+  text :> Atom -> TextColumn
+  let text(name) = Harmat.Schema.text(Harmat.Migration.named(name))
 
   # A handle on an integer column.
-  whole :> String -> IntColumn
-  let whole(name) = Harmat.Schema.integer(name)
+  whole :> Atom -> IntColumn
+  let whole(name) = Harmat.Schema.integer(Harmat.Migration.named(name))
 end
 
 # The tables a migration history produces, by replaying its operations in

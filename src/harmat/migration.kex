@@ -3,18 +3,18 @@
 # A migration is a named list of operations, written in a small Rails-like
 # DSL and rendered as standard SQL, the same for every database:
 #
-#   let createUsers = migration("create_users") do
-#     createTable "users" do
-#       string("id").primaryKey
-#       string("email")
-#       bigint("credit").withDefault(0)
-#       string("role").withDefault("member").oneOf(["member", "admin"])
+#   let createUsers = migration :create_users do
+#     createTable :users do
+#       string(:id).primaryKey
+#       string(:email)
+#       bigint(:credit).withDefault(0)
+#       string(:role).withDefault("member").oneOf(["member", "admin"])
 #     end
-#     addUniqueIndex("users", ["email"])
+#     addUniqueIndex(:users, [:email])
 #   end
 #
-#   let addUserNames = migration("add_user_names", follows: "create_users") do
-#     addColumn("users", string("name").withDefault(""))
+#   let addUserNames = migration :add_user_names, follows: :create_users do
+#     addColumn(:users, string(:name).withDefault(""))
 #   end
 #
 # Order comes from `follows`, never from file names or timestamps: every
@@ -24,7 +24,7 @@
 # instead of the silent interleaving timestamps give. It is reconciled by
 # saying so, in one line, without touching either branch's migration:
 #
-#   let mergeNamesAndAvatars = merge("merge_names_and_avatars", ["add_user_names", "add_avatars"])
+#   let mergeNamesAndAvatars = merge(:merge_names_and_avatars, [:add_user_names, :add_avatars])
 #
 # So the history is a directed acyclic graph with exactly one head, and what a
 # database has run is a set of names rather than a version number: a database
@@ -79,66 +79,75 @@ end
 # The table that records which migrations a database has run.
 let LEDGER = "schema_migrations"
 
+# Tables, columns, indexes and migrations are named with atoms in the DSL —
+# `createTable :users`, `string(:email)`, `follows: :create_users` — and kept
+# as text from there on.
+named : Atom -> String
+let named(word) do
+  let shown = "${word}"
+  shown.startsWith?(":") then shown.drop(1) else shown
+end
+
 # Declares the first migration of a history.
 #
-# @param name [String] unique name, recorded in the ledger
+# @param name [Atom] unique name, recorded in the ledger
 # @param operations [Block<[Operation]>] the schema changes, in order
 # @return [Migration] the migration
-migration : String -> Block<[Operation]> -> Migration
-let migration(name, operations) = Migration { name: name, operations: operations() }
+migration : Atom -> Block<[Operation]> -> Migration
+let migration(name, operations) = Migration { name: named(name), operations: operations() }
 
 # Declares a migration that runs after another.
 #
-# @param name [String] unique name, recorded in the ledger
-# @param follows [String] the name of the migration before this one
+# @param name [Atom] unique name, recorded in the ledger
+# @param follows [Atom] the name of the migration before this one
 # @param operations [Block<[Operation]>] the schema changes, in order
 # @return [Migration] the migration
-migration : String -> String -> Block<[Operation]> -> Migration
-let migration(name, follows: String, operations) = Migration { name: name, parents: [follows], operations: operations() }
+migration : Atom -> Atom -> Block<[Operation]> -> Migration
+let migration(name, follows: Atom, operations) = Migration { name: named(name), parents: [named(follows)], operations: operations() }
 
 # Joins the heads two branches left behind into one. It changes nothing in
 # the database; it only records that both histories are now one.
 #
-# @param name [String] unique name, recorded in the ledger
-# @param heads [[String]] the migrations being joined
+# @param name [Atom] unique name, recorded in the ledger
+# @param heads [[Atom]] the migrations being joined
 # @return [Migration] the merge
-merge : String -> [String] -> Migration
-let merge(name, heads) = Migration { name: name, parents: heads }
+merge : Atom -> [Atom] -> Migration
+let merge(name, heads) = Migration { name: named(name), parents: heads.map { |parent| named(parent) } }
 
 # --- Operations -------------------------------------------------------------
 
-createTable : String -> Block<[Column]> -> Operation
-let createTable(name, columns) = CreateTable(name, columns())
+createTable : Atom -> Block<[Column]> -> Operation
+let createTable(name, columns) = CreateTable(named(name), columns())
 
 # Drops a table for good: with no columns given, this cannot be rolled back.
-dropTable : String -> Operation
-let dropTable(name) = DropTable(name, [])
+dropTable : Atom -> Operation
+let dropTable(name) = DropTable(named(name), [])
 
 # Drops a table whose columns are stated, so a rollback can create it again.
-dropTable : String -> Block<[Column]> -> Operation
-let dropTable(name, columns) = DropTable(name, columns())
+dropTable : Atom -> Block<[Column]> -> Operation
+let dropTable(name, columns) = DropTable(named(name), columns())
 
-addColumn : String -> Column -> Operation
-let addColumn(name, column) = AddColumn(name, column)
+addColumn : Atom -> Column -> Operation
+let addColumn(name, column) = AddColumn(named(name), column)
 
 # Removes a column. The whole column is given, not just its name, so that a
 # rollback can add it back as it was.
-removeColumn : String -> Column -> Operation
-let removeColumn(name, column) = RemoveColumn(name, column)
+removeColumn : Atom -> Column -> Operation
+let removeColumn(name, column) = RemoveColumn(named(name), column)
 
 # An index named `<table>_<columns>_index`.
-addIndex : String -> [String] -> Operation
-let addIndex(name, columns) = AddIndex(name, columns, false)
+addIndex : Atom -> [Atom] -> Operation
+let addIndex(name, columns) = AddIndex(named(name), columns.map { |column| named(column) }, false)
 
-addUniqueIndex : String -> [String] -> Operation
-let addUniqueIndex(name, columns) = AddIndex(name, columns, true)
+addUniqueIndex : Atom -> [Atom] -> Operation
+let addUniqueIndex(name, columns) = AddIndex(named(name), columns.map { |column| named(column) }, true)
 
 # Drops the index `addIndex` made for these columns.
-removeIndex : String -> [String] -> Operation
-let removeIndex(name, columns) = RemoveIndex(name, columns, false)
+removeIndex : Atom -> [Atom] -> Operation
+let removeIndex(name, columns) = RemoveIndex(named(name), columns.map { |column| named(column) }, false)
 
-removeUniqueIndex : String -> [String] -> Operation
-let removeUniqueIndex(name, columns) = RemoveIndex(name, columns, true)
+removeUniqueIndex : Atom -> [Atom] -> Operation
+let removeUniqueIndex(name, columns) = RemoveIndex(named(name), columns.map { |column| named(column) }, true)
 
 # SQL the DSL has no word for, run as written. Keep it standard: Harmat does
 # not know which database will run it. Cannot be rolled back.
@@ -152,20 +161,20 @@ let runSql(statement, undo: String) = Execute(statement, Just(undo))
 # --- Columns ----------------------------------------------------------------
 
 # Text of any length.
-string : String -> Column
-let string(label) = Column { label: label, storage: Characters }
+string : Atom -> Column
+let string(label) = Column { label: named(label), storage: Characters }
 
 # A 64-bit integer.
-bigint : String -> Column
-let bigint(label) = Column { label: label, storage: Wide }
+bigint : Atom -> Column
+let bigint(label) = Column { label: named(label), storage: Wide }
 
 # A 32-bit integer.
-int : String -> Column
-let int(label) = Column { label: label, storage: Whole }
+int : Atom -> Column
+let int(label) = Column { label: named(label), storage: Whole }
 
 # True or false.
-boolean : String -> Column
-let boolean(label) = Column { label: label, storage: Flag }
+boolean : Atom -> Column
+let boolean(label) = Column { label: named(label), storage: Flag }
 
 make Column do
   primaryKey :> Column
@@ -325,11 +334,11 @@ end
 # The names in a database's ledger, creating the ledger when it is missing.
 recorded : Any -> Result<[String], String>
 foul recorded(connection) do
-  let ledger = createTable LEDGER do
-    string("name").primaryKey
-    string("parents")
-    string("applied_at")
-  end
+  let ledger = CreateTable(LEDGER, [
+    Column { label: "name", storage: Characters, key?: true },
+    Column { label: "parents", storage: Characters },
+    Column { label: "applied_at", storage: Characters }
+  ])
   let create = sqlOf(ledger).replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")
   match Harmat.Database.execute(connection, Harmat.Database.plain(create)) do
     Error(reason) => Error(reason)
