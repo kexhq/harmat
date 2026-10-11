@@ -40,9 +40,16 @@ describe("Harmat.Db statements") do
                  Error("SELECT id, email, owner, credit FROM users WHERE owner = ? AND credit = ? LIMIT 1 [ada, 5]"))
   end
 
+  it("takes a condition asked of the column itself") do
+    Assert.equal(db.select([:id]).from(users).where(owner.eq("ada")).where(credit.eq(5)).all,
+                 Error("SELECT id FROM users WHERE owner = ? AND credit = ? [ada, 5]"))
+  end
+
   it("orders largest first") do
-    Assert.equal(db.select([:id]).from(users).orderByDescending([:credit, :id]).limit(3).all,
+    Assert.equal(db.select([:id]).from(users).orderBy(descending: [:credit, :id]).limit(3).all,
                  Error("SELECT id FROM users ORDER BY credit DESC, id DESC LIMIT 3 []"))
+    Assert.equal(db.select([:id]).from(users).orderBy([:owner], descending: [:credit]).all,
+                 Error("SELECT id FROM users ORDER BY owner, credit DESC []"))
   end
 
   it("inserts a row given by column name, each value as its column stores it") do

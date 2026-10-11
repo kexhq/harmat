@@ -4,7 +4,7 @@
 #
 #   db.select().from(users).where(eq(Users.email, email)).all
 #   db.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
-#   db.select().from(messages).orderByDescending([:sent_at]).limit(200).all
+#   db.select().from(messages).orderBy(descending: [:sent_at]).limit(200).all
 #   db.insert(users).values({id: id, email: email}).run
 #   db.update(users).set({email: email}).where(eq(Users.id, id)).run
 #   db.delete(users).where(eq(Users.id, id)).run
@@ -114,10 +114,14 @@ make Select do
   # Narrows the rows; several `where`s all have to hold.
   let where(condition: Cond) -> Select = Select { ...this, conditions: @conditions + [condition] }
 
-  let orderBy(columns: [Atom]) -> Select = Select { ...this, order: columns.map { |column| named(column) } }
-
-  # The same, largest first: with `limit`, the newest rows of a table.
-  let orderByDescending(columns: [Atom]) -> Select = Select { ...this, order: columns.map { |column| "${named(column)} DESC" } }
+  # Sorts the rows: `orderBy([:email])`, or largest first with
+  # `orderBy(descending: [:sent_at])` — with `limit`, the newest rows of a
+  # table. Given both, the ascending columns come first.
+  let orderBy(columns: [Atom] = [], descending: [Atom] = []) -> Select do
+    let rising = columns.map { |column| named(column) }
+    let falling = descending.map { |column| "${named(column)} DESC" }
+    Select { ...this, order: rising + falling }
+  end
 
   let limit(count: Integer) -> Select = Select { ...this, cap: Just(count) }
 
