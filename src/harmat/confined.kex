@@ -1,0 +1,38 @@
+# Harmat.Confined — where confined statements start.
+#
+#   let hers = Harmat.Database.within(Users.owner.eq(owner))
+#   hers.update(users).set({credit: 5}).where(Users.id.eq(id)).run
+#
+# Every statement started here carries the conditions it was made with, so
+# it cannot reach a row they do not hold for. (Its own module, apart from
+# `Harmat.Database`: a method and a function of one name and arity cannot share
+# one, and `Database.select(columns)` is such a function.)
+module Harmat.Confined
+
+using Harmat.Schema, only: [Cond]
+using Harmat.Table, only: [Definition]
+using Harmat.Column, only: [named]
+using Harmat.Database, only: [Select, Insert, Update, Delete]
+
+record Confined do
+  confines : [Cond] = []
+end
+
+make Confined do
+  # Narrower still: this condition as well.
+  let within(condition: Cond) -> Confined = Confined { confines: @confines + [condition] }
+
+  # Every column of the table named in `from`.
+  let select() -> Select = Select { confines: @confines }
+
+  # Only these columns.
+  let select(columns: [Atom]) -> Select = Select { confines: @confines, columns: columns.map { |column| named(column) } }
+
+  # An inserted row is not held to the conditions: there is no row yet for
+  # them to be true of.
+  let insert(target: Definition) -> Insert = Insert { target: target }
+
+  let update(target: Definition) -> Update = Update { confines: @confines, target: target }
+
+  let delete(target: Definition) -> Delete = Delete { confines: @confines, target: target }
+end

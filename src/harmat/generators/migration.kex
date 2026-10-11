@@ -1,0 +1,140 @@
+# The `harmat:migration` generator: the next migration of an application.
+#
+#   tey generate harmat:migration --name add_avatars
+#
+# writes db/migrate/N0006_add_avatars.kex — numbered after the last one,
+# following the current head — and adds it to the list in db/migrations.kex.
+# Those are the three things a new migration has to get right by hand: its
+# number, what it follows, and being listed.
+#
+# This module is the working-out, on text it is handed. Reading the
+# workspace and reporting the files to write is the entrypoint's
+# (generators/migration.kex).
+module Harmat.Generators.Migration
+
+# One existing migration, as its file declares it.
+record Existing do
+  number : Integer
+  name : String
+  parents : [String] = []
+end
+
+# Where an application keeps its migrations and the list of them.
+let DIRECTORY = "db/migrate"
+let LISTING = "db/migrations.kex"
+
+# Whether a name can be a migration's: lower-case words joined by
+# underscores, as in `add_avatars`.
+valid? : String -> Bool
+let valid?(name) do
+  let allowed = name.chars.all? { |char| char.lower? || char.digit? || "${char}" == "_" }
+  !name.empty? && allowed && name.chars.first.map { |char| char.lower? }.or(false)
+end
+
+# `add_avatars` as a module name part: "AddAvatars".
+titled : String -> String
+let titled(name) = name.split("_").map { |part| part.capitalize }.join("")
+
+# `7` as it appears in a file name: "N0007".
+numbered : Integer -> String
+let numbered(number) do
+  let digits = "0000${number}"
+  "N${digits.drop(digits.length - 4)}"
+end
+
+# What a migration file declares, read from its name and its source: its
+# number from `N0003_…`, its name and parents from the `Migration.define` or
+# `Migration.merge` line.
+described : String -> String -> Existing?
+let described(file, source) do
+  let digits = file.drop(1).split("_").first.or("")
+  let number = file.startsWith?("N") then digits.to(Integer) else None
+  let defined = source.lines.find { |line| line.contains?("Migration.define :") || line.contains?("Migration.merge(:") }
+  match (number, defined) do
+    (Just(count), Just(line)) => Just(Existing { number: count, name: word(following(line, "Migration.define :") + following(line, "Migration.merge(:")), parents: followed(line) })
+    _ => None
+  end
+end
+
+# The migrations no other one follows. A sound history has exactly one.
+heads : [Existing] -> [String]
+let heads(existing) do
+  let followed = existing.flatMap { |migration| migration.parents }
+  existing.map { |migration| migration.name }.reject { |name| followed.contains?(name) }
+end
+
+# The source of a new migration file.
+source : Integer -> String -> String -> String
+let source(number, name, head) do
+  let follows = head.empty? then "" else ", follows: :${head}"
+  [
+    "# TODO: say what this migration is for.",
+    "module DB.Migrate.${numbered(number)}${titled(name)}",
+    "",
+    "using Harmat.Migration, as: Migration",
+    "using Harmat.Migration, only: [createTable, addColumn, addIndex]",
+    "",
+    "let change = Migration.define :${name}${follows} do",
+    "  # createTable(:things) do |t|",
+    "  #   [",
+    "  #     t.text(:id, primaryKey: true),",
+    "  #     t.text(:name, default: \"\"),",
+    "  #     t.bigint(:count, default: 0)",
+    "  #   ]",
+    "  # end",
+    "  # addColumn(:things) do |t| t.text(:note, default: :null, nullable: true) end",
+    "  # addIndex(:things, [:name], unique: true)",
+    "end",
+    ""
+  ].join("\n")
+end
+
+# The listing with one more entry at the end of its `all = [ … ]`, and the
+# "← head" note in its header moved to the new file. `None` when the listing
+# has no such list to add to.
+listed : String -> Integer -> String -> String?
+let listed(listing, number, name) do
+  let entry = "DB.Migrate.${numbered(number)}${titled(name)}.change"
+  let lines = listing.lines
+  match lines.findIndex { |line| line.trim.startsWith?("let all = [") } do
+    None => None
+    Just(start) => match lines.drop(start).findIndex { |line| line.trim == "]" } do
+      None => None
+      Just(offset) => do
+        let close = start + offset
+        let before = lines.take(close)
+        let last = before.last.or("")
+        let joined = last.trim.endsWith?("[") || last.trim.endsWith?(",") then before else before.take(before.count - 1) + ["${last},"]
+        let noted = joined.flatMap { |line| line.contains?("← head") then [unpadded(line.replace("← head", "")), "#   ${DIRECTORY}/${numbered(number)}_${name}.kex        ← head"] else [line] }
+        Just((noted + ["  ${entry}"] + lines.drop(close)).join("\n") + "\n")
+      end
+    end
+  end
+end
+
+private do
+  # The text after `marker` on a line, or "" when the marker is not there.
+  following : String -> String -> String
+  let following(line, marker) do
+    let parts = line.split(marker)
+    parts.count > 1 then parts.drop(1).join(marker) else ""
+  end
+
+  # The line without the spaces at its end.
+  unpadded : String -> String
+  let unpadded(line) = line.endsWith?(" ") then unpadded(line.take(line.length - 1)) else line
+
+  # The leading run of name characters.
+  word : String -> String
+  let word(text) = "${text.chars.takeWhile { |char| char.lower? || char.digit? || "${char}" == "_" }.join("")}"
+
+  # Who a declaration line follows: `follows: :parent`, or the list a merge
+  # joins.
+  followed : String -> [String]
+  let followed(line) do
+    let single = word(following(line, "follows: :"))
+    let merged = following(line, "Migration.merge(:").split("[").drop(1).first.or("").split("]").first.or("")
+      .split(",").map { |part| word(part.trim.drop(1)) }.reject { |name| name.empty? }
+    single.empty? then merged else [single]
+  end
+end

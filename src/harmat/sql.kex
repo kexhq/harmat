@@ -1,0 +1,69 @@
+# Harmat.Sql — SQL written as SQL, and checked when the program is built.
+#
+#   using Harmat.Sql, only: [sql]
+#
+#   sql`SELECT name FROM users WHERE id = ?`
+#   sql$`UPDATE users SET age = ${age} WHERE id = ${id}`
+#
+# A `$`-hole becomes a bound parameter, never text, so a value cannot become
+# part of the statement. A literal over several lines loses its indentation.
+#
+# Its own module, with no `compiled do` in it: a module that has one cannot
+# be used from another package yet (kexhq/kex#444), and this is the part of
+# Harmat an application's migrations write in.
+module Harmat.Sql do
+  # A literal as it was read: static text plus bound values.
+  record Sql do
+    statement : String
+    params    : [Any] = []
+  end
+
+  # The `sql` tag.
+  sql : [String] -> [Any] -> Sql
+  let sql(parts: [String], values: [Any]) -> Harmat.Sql.Sql do
+    let tail = values.mapIndexed do |_, i|
+      "?" + parts.at(i + 1).or("")
+    end
+    Sql { statement: parts.at(0).or("") + tail.join(""), params: values }
+  end
+
+  # Compile-time syntax check for `sql` literals. Pure by requirement:
+  # the compiler evaluates it on the tree-walk interpreter while
+  # building, so it cannot touch the clock, the filesystem, or a DB.
+  validateSql : String -> [TaggedValidation.Issue]
+  let validateSql(source: String) -> [TaggedValidation.Issue] do
+    return [TaggedValidation.fatal("empty SQL literal")] if source.trim.empty?
+
+    let head = source.trim.upperCase
+    let keywords = [
+      "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE",
+      "ALTER", "DROP", "WITH", "EXPLAIN"
+    ]
+    let known = keywords.any? { |k| head.startsWith?(k) }
+    return [TaggedValidation.fatal("SQL must begin with a statement keyword")] if !known
+
+    let code = Harmat.Sql.outsideQuotes(source)
+    let opens = code.split("(").count - 1
+    let closes = code.split(")").count - 1
+    return [TaggedValidation.fatal("unbalanced parentheses")] if opens != closes
+
+    let quotes = source.split("'").count - 1
+    return [TaggedValidation.fatal("unterminated string literal")] if quotes.modulo(2) != 0
+
+    return []
+  end
+
+  private do
+    # The literal with quoted regions removed, so a parenthesis inside
+    # 'text' cannot unbalance the check. Splitting on a quote keeps
+    # even-indexed segments outside strings; doubled '' escapes are
+    # parity-neutral, so they stay correct for free.
+    outsideQuotes : String -> String
+    let outsideQuotes(source: String) -> String do
+      let kept = source.split("'").mapIndexed do |seg, i|
+        if i.modulo(2) == 0 then seg else "" end
+      end
+      return kept.join("")
+    end
+  end
+end

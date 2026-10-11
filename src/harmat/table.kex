@@ -1,0 +1,128 @@
+# Harmat.Table — tables declared in Kex, and held against the migrations.
+#
+# A table is declared once, with the same column words a migration uses:
+#
+#   using Harmat.Table, as: Table
+#
+#   let users = Table.define :users do |t|
+#     [
+#       t.text(:id, primaryKey: true),
+#       t.text(:email),
+#       t.bigint(:credit, default: 0)
+#     ]
+#   end
+#
+# and its columns are then reached as typed handles for queries and writes:
+#
+#   let email = users.textColumn(:email)      # compares to and stores a String
+#   let credit = users.wholeColumn(:credit)   # compares to and stores an Integer
+#
+# The declaration is what the code believes; the migrations are what a
+# database actually gets. `drift` replays the migration history into the
+# tables it produces and lists every way the two disagree — a column declared
+# but never migrated, a default changed in one place only — so "the schema
+# and the migrations disagree" is a failed spec or a refused boot instead of
+# an SQL error on some later request.
+#
+# (The plan in the Kex repository's docs/web-stack-plan.md goes further: one
+# `compiled do` declaration generating the row record and the handles, with
+# drift a build error. That waits on `compiled do` working across packages.)
+module Harmat.Table
+
+using Harmat.Schema, only: [Table, TextColumn, IntColumn]
+using Harmat.Column, only: [Column, TableBuilder, named]
+using Harmat.Migration, only: [Migration, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, Execute]
+
+# A declared table: its name and its columns, in order.
+record Definition do
+  label : String
+  columns : [Column] = []
+end
+
+# Declares a table.
+#
+# @param label [Atom] the table's name in the database
+# @param columns [TableBuilder -> [Column]] its columns, as in `createTable`
+# @return [Definition] the declaration
+define : Atom -> (TableBuilder -> [Column]) -> Definition
+let define(label, columns) = Definition { label: named(label), columns: columns(TableBuilder { table: named(label) }) }
+
+make Definition do
+  # The table, for `Harmat.Odbc` statements.
+  table :> Table
+  let table = Harmat.Schema.table(@label)
+
+  # Every column name, in declared order: the column list of a SELECT.
+  names :> [String]
+  let names = @columns.map { |column| column.label }
+
+  # A handle on a text column. (`textColumn`, not `text`: the table builder
+  # has a `text` with defaulted parameters, and two make-block methods of one
+  # name are confused by the compiler when one has defaults — kexhq/kex#475.)
+  textColumn :> Atom -> TextColumn
+  let textColumn(name) = Harmat.Schema.text(named(name))
+
+  # A handle on an integer column.
+  wholeColumn :> Atom -> IntColumn
+  let wholeColumn(name) = Harmat.Schema.integer(named(name))
+end
+
+# The tables a migration history produces, by replaying its operations in
+# order. Indexes and raw SQL do not change a table's columns and are skipped.
+replayed : [Migration] -> Result<[Definition], String>
+let replayed(steps) do
+  Harmat.Migration.ordered(steps).map { |history|
+    history.flatMap { |step| step.operations }.reduce([]) { |tables, operation| applied(tables, operation) }
+  }
+end
+
+# Every disagreement between the declared tables and the migration history,
+# in words. Empty means a migrated database has exactly the declared shape.
+drift : [Definition] -> [Migration] -> [String]
+let drift(declared, steps) do
+  match replayed(steps) do
+    Error(reason) => [reason]
+    Ok(migrated) => declared.flatMap { |definition| compared(definition, migrated) } + undeclared(declared, migrated)
+  end
+end
+
+private do
+  applied : [Definition] -> Operation -> [Definition]
+  let applied(tables, CreateTable(label, columns)) = tables + [Definition { label: label, columns: columns }]
+  let applied(tables, DropTable(label, columns)) = tables.reject { |definition| definition.label == label }
+  let applied(tables, AddColumn(label, column)) = tables.map { |definition|
+    definition.label == label then Definition { label: label, columns: definition.columns + [column] } else definition
+  }
+  let applied(tables, RemoveColumn(label, column)) = tables.map { |definition|
+    definition.label == label then Definition { label: label, columns: definition.columns.reject { |kept| kept.label == column.label } } else definition
+  }
+  let applied(tables, AddIndex(label, columns, unique?)) = tables
+  let applied(tables, RemoveIndex(label, columns, unique?)) = tables
+  let applied(tables, Execute(statement, undo)) = tables
+
+  compared : Definition -> [Definition] -> [String]
+  let compared(definition, migrated) do
+    match migrated.find { |candidate| candidate.label == definition.label } do
+      None => ["table ${definition.label} is declared but no migration creates it"]
+      Just(actual) => columnDrift(definition, actual)
+    end
+  end
+
+  columnDrift : Definition -> Definition -> [String]
+  let columnDrift(declared, actual) do
+    let missing = declared.columns.reject { |column| actual.names.contains?(column.label) }
+      .map { |column| "${declared.label}.${column.label} is declared but no migration adds it" }
+    let extra = actual.columns.reject { |column| declared.names.contains?(column.label) }
+      .map { |column| "${declared.label}.${column.label} is migrated but not declared" }
+    let changed = declared.columns.filter { |column| actual.columns.any? { |other| other.label == column.label && other != column } }
+      .map { |column| "${declared.label}.${column.label} is declared differently from how it was migrated" }
+    missing + extra + changed
+  end
+
+  undeclared : [Definition] -> [Definition] -> [String]
+  let undeclared(declared, migrated) do
+    let known = declared.map { |definition| definition.label }
+    migrated.reject { |definition| known.contains?(definition.label) }
+      .map { |definition| "table ${definition.label} is migrated but not declared" }
+  end
+end

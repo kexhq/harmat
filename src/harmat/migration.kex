@@ -1,0 +1,379 @@
+# Harmat.Migration — schema changes written in Kex, kept as a graph.
+#
+#   using Harmat.Migration, as: Migration
+#   using Harmat.Migration, only: [createTable, addColumn, addIndex]
+#
+#   let change = Migration.define :create_users do
+#     createTable(:users) do |t|
+#       [
+#         t.text(:id, primaryKey: true),
+#         t.text(:email),
+#         t.text(:role, default: "member", oneOf: ["member", "admin"]),
+#         t.bigint(:credit, default: 0)
+#       ]
+#     end
+#     addIndex(:users, [:email], unique: true)
+#   end
+#
+#   let change = Migration.define :add_user_names, follows: :create_users do
+#     addColumn(:users) do |t| t.text(:name, default: "") end
+#   end
+#
+# Order comes from `follows`, never from file names or timestamps: every
+# migration but the first names its parent. On one branch that is a chain.
+# When two branches each add a migration, both name the same parent, and after
+# the merge the history has two heads — a state `ordered` detects and names,
+# instead of the silent interleaving timestamps give. It is reconciled by
+# saying so, in one line, without touching either branch's migration:
+#
+#   let change = Migration.merge(:merge_names_and_avatars, [:add_user_names, :add_avatars])
+#
+# So the history is a directed acyclic graph with exactly one head, and what a
+# database has run is a set of names rather than a version number: a database
+# that already ran one branch simply runs the other's migrations next.
+# (docs/web-stack-plan.md in the Kex repository, "Migrations are a DAG".)
+#
+# Nobody writes a "down". A migration is data, so `rollback` works out the
+# opposite of each operation itself and runs them last to first: a created
+# table is dropped, an added column removed, an added index dropped. That
+# restores the schema's shape, never the rows a dropped column or table held.
+# The only operations it cannot undo are the ones that threw information away
+# — a `dropTable` that was not told the table's columns, an `execute` given
+# no inverse — and those are refused before anything is touched; `irreversible`
+# lists them so a spec can refuse them before they are merged at all.
+module Harmat.Migration
+
+using Harmat.Schema, only: [table, Text]
+using Harmat.Column, only: [Column, Storage, Characters, Wide, Whole, Flag, TableBuilder, named]
+using Harmat.Sql, only: [Sql]
+
+# One schema change.
+type Operation = CreateTable(String, [Column])
+  | DropTable(String, [Column])
+  | AddColumn(String, Column)
+  | RemoveColumn(String, Column)
+  | AddIndex(String, [String], Bool)
+  | RemoveIndex(String, [String], Bool)
+  | Execute(String, String?)
+
+# A named step in the history. `parents` names the migrations it follows:
+# none for the first, one for an ordinary step, two or more for a merge.
+record Migration do
+  name : String
+  parents : [String] = []
+  operations : [Operation] = []
+end
+
+# The table that records which migrations a database has run.
+let LEDGER = "schema_migrations"
+
+# Declares the first migration of a history.
+#
+# @param name [Atom] unique name, recorded in the ledger
+# @param operations [Block<[Operation]>] the schema changes, in order
+# @return [Migration] the migration
+define : Atom -> Block<[Operation]> -> Migration
+let define(name, operations) = Migration { name: named(name), operations: operations() }
+
+# Declares a migration that runs after another.
+#
+# @param name [Atom] unique name, recorded in the ledger
+# @param follows [Atom] the name of the migration before this one
+# @param operations [Block<[Operation]>] the schema changes, in order
+# @return [Migration] the migration
+define : Atom -> Atom -> Block<[Operation]> -> Migration
+let define(name, follows: Atom, operations) = Migration { name: named(name), parents: [named(follows)], operations: operations() }
+
+# Joins the heads two branches left behind into one. It changes nothing in
+# the database; it only records that both histories are now one.
+#
+# @param name [Atom] unique name, recorded in the ledger
+# @param heads [[Atom]] the migrations being joined
+# @return [Migration] the merge
+merge : Atom -> [Atom] -> Migration
+let merge(name, heads) = Migration { name: named(name), parents: heads.map { |parent| named(parent) } }
+
+# --- Operations -------------------------------------------------------------
+
+# Creates a table. The block is handed a `TableBuilder` and returns the
+# table's columns.
+createTable : Atom -> (TableBuilder -> [Column]) -> Operation
+let createTable(name, columns) = CreateTable(named(name), columns(TableBuilder { table: named(name) }))
+
+# Drops a table for good: with no columns given, this cannot be rolled back.
+dropTable : Atom -> Operation
+let dropTable(name) = DropTable(named(name), [])
+
+# Drops a table whose columns are stated, so a rollback can create it again.
+dropTable : Atom -> (TableBuilder -> [Column]) -> Operation
+let dropTable(name, columns) = DropTable(named(name), columns(TableBuilder { table: named(name) }))
+
+# Adds one column: `addColumn(:users) do |t| t.text(:name, default: "") end`.
+addColumn : Atom -> (TableBuilder -> Column) -> Operation
+let addColumn(name, column) = AddColumn(named(name), column(TableBuilder { table: named(name) }))
+
+# Removes a column. The whole column is given, not just its name, so that a
+# rollback can add it back as it was.
+removeColumn : Atom -> (TableBuilder -> Column) -> Operation
+let removeColumn(name, column) = RemoveColumn(named(name), column(TableBuilder { table: named(name) }))
+
+# An index named `<table>_<columns>_index`; `unique: true` for a unique one.
+let addIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation do
+  AddIndex(named(name), columns.map { |column| named(column) }, unique)
+end
+
+# Drops the index `addIndex` made for these columns.
+let removeIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation do
+  RemoveIndex(named(name), columns.map { |column| named(column) }, unique)
+end
+
+# SQL the DSL has no word for, run as written:
+#
+#   execute(sql`UPDATE users SET role = 'member'`)
+#
+# It is an `sql` literal and not a string, so it is checked when the
+# migration is built. Keep it standard: Harmat does not know which database
+# will run it. It is run as its text alone — a migration binds no values, so
+# write them into the statement. Cannot be rolled back.
+execute : Sql -> Operation
+let execute(statement) = Execute(statement.statement.trim, None)
+
+# The same, with the statement that undoes it.
+execute : Sql -> Sql -> Operation
+let execute(statement, undo: Sql) = Execute(statement.statement.trim, Just(undo.statement.trim))
+
+# --- Rendering --------------------------------------------------------------
+
+# The SQL of one operation.
+sqlOf : Operation -> String
+let sqlOf(CreateTable(name, columns)) do
+  let lines = columns.map { |column| "  ${Harmat.Column.columnSql(column)}" }
+  "CREATE TABLE ${name} (\n${lines.join(",\n")}\n)"
+end
+let sqlOf(DropTable(name, columns)) = "DROP TABLE ${name}"
+let sqlOf(AddColumn(name, column)) = "ALTER TABLE ${name} ADD COLUMN ${Harmat.Column.columnSql(column)}"
+let sqlOf(AddIndex(name, columns, unique?)) do
+  let kind = unique? then "UNIQUE INDEX" else "INDEX"
+  "CREATE ${kind} ${indexName(name, columns)} ON ${name} (${columns.join(", ")})"
+end
+let sqlOf(RemoveColumn(name, column)) = "ALTER TABLE ${name} DROP COLUMN ${column.label}"
+let sqlOf(RemoveIndex(name, columns, unique?)) = "DROP INDEX ${indexName(name, columns)}"
+let sqlOf(Execute(statement, undo)) = statement
+
+# The operation that undoes another, or why there is none.
+reversed : Operation -> Result<Operation, String>
+let reversed(CreateTable(name, columns)) = Ok(DropTable(name, columns))
+let reversed(DropTable(name, [])) = Error("dropTable(\"${name}\") does not say what columns the table had; give it the same block createTable had")
+let reversed(DropTable(name, columns)) = Ok(CreateTable(name, columns))
+let reversed(AddColumn(name, column)) = Ok(RemoveColumn(name, column))
+let reversed(RemoveColumn(name, column)) = Ok(AddColumn(name, column))
+let reversed(AddIndex(name, columns, unique?)) = Ok(RemoveIndex(name, columns, unique?))
+let reversed(RemoveIndex(name, columns, unique?)) = Ok(AddIndex(name, columns, unique?))
+let reversed(Execute(statement, Just(undo))) = Ok(Execute(undo, Just(statement)))
+let reversed(Execute(statement, None)) = Error("execute was given no `undo:` statement for: ${statement}")
+
+# The statements that undo a migration, last operation first — or the first
+# reason one of its operations cannot be undone.
+undoing : Migration -> Result<[String], String>
+let undoing(step) do
+  step.operations.reverse.reduce(Ok([])) { |collected, operation|
+    match (collected, reversed(operation)) do
+      (Error(reason), _) => Error(reason)
+      (Ok(_), Error(reason)) => Error("migration \"${step.name}\" cannot be rolled back: ${reason}")
+      (Ok(statements), Ok(opposite)) => Ok(statements + [sqlOf(opposite)])
+    end
+  }
+end
+
+# Every statement of a migration, in order.
+statements : Migration -> [String]
+let statements(step) = step.operations.map { |operation| sqlOf(operation) }
+
+# The migrations whose rollback Harmat cannot work out, with the reason for
+# each. Empty is what a spec should demand, so that an irreversible migration
+# is found when it is written and not halfway through undoing a deploy.
+irreversible : [Migration] -> [String]
+let irreversible(steps) = steps.flatMap { |step|
+  match undoing(step) do
+    Ok(_) => []
+    Error(reason) => [reason]
+  end
+}
+
+# --- The history ------------------------------------------------------------
+
+# The migrations whose name no other migration follows. A sound history has
+# exactly one.
+heads : [Migration] -> [String]
+let heads(steps) do
+  let followed = steps.flatMap { |step| step.parents }
+  steps.map { |step| step.name }.reject { |name| followed.contains?(name) }
+end
+
+# The migrations in an order that runs every parent before its children — or
+# what is wrong with the history. Two heads names both, which is what merging
+# two branches that each added a migration looks like, and says how to join
+# them. Migrations neither of which follows the other are ordered by name, so
+# the order is the same on every machine.
+ordered : [Migration] -> Result<[Migration], String>
+let ordered(steps) do
+  let names = steps.map { |step| step.name }
+  return Ok([]) if steps.empty?
+  return Error("migration names must be unique: ${repeated(names).join(", ")} appear more than once") if names.uniq.count != names.count
+
+  let strays = steps.flatMap { |step| step.parents.reject { |parent| names.contains?(parent) }.map { |parent| "\"${step.name}\" follows \"${parent}\"" } }
+  return Error("${strays.join(", ")}, which is not in the list") if !strays.empty?
+
+  let roots = steps.filter { |step| step.parents.empty? }
+  return Error("${quotedNames(roots)} each follow nothing; only the first migration may") if roots.count > 1
+
+  match heads(steps) do
+    [_] => sorted(steps, [])
+    [] => Error("no migration is last: they follow each other in a loop")
+    several => Error("the history has ${several.count} heads: ${several.map { |name| "\"${name}\"" }.join(" and ")}. This is what merging branches that each added a migration looks like — join them with merge(\"merge_${several.join("_and_")}\", [${several.map { |name| "\"${name}\"" }.join(", ")}])")
+  end
+end
+
+# The one head of a sound history: what the next migration should follow.
+head : [Migration] -> Result<String, String>
+let head(steps) = ordered(steps).map { |chain| heads(chain).first.or("") }
+
+# Brings a database up to date: runs, in chain order, every migration its
+# ledger does not list. The names this call ran — or the first error, after
+# which nothing later was attempted.
+#
+# @param connection [Any] an open `Harmat.Odbc` connection
+# @param steps [[Migration]] every migration of the application, in any order
+# @return [Result<[String], String>] the migrations applied, oldest first
+migrate : Any -> [Migration] -> Result<[String], String>
+foul migrate(connection, steps) do
+  match ordered(steps) do
+    Error(reason) => Error(reason)
+    Ok(chain) => match recorded(connection) do
+      Error(reason) => Error(reason)
+      Ok(done) => applied(connection, chain.reject { |step| done.contains?(step.name) }, [])
+    end
+  end
+end
+
+# Undoes the newest migration a database has run, by applying the opposite of
+# its operations. The name it rolled back; none when nothing was applied.
+rollback : Any -> [Migration] -> Result<[String], String>
+foul rollback(connection, steps) = rollback(connection, steps, 1)
+
+# Undoes the newest `count` applied migrations, newest first. The names
+# rolled back, in the order they were undone. Every one of them is checked
+# for reversibility before the first is touched.
+rollback : Any -> [Migration] -> Integer -> Result<[String], String>
+foul rollback(connection, steps, count) do
+  match ordered(steps) do
+    Error(reason) => Error(reason)
+    Ok(chain) => match recorded(connection) do
+      Error(reason) => Error(reason)
+      Ok(done) => do
+        let targets = chain.filter { |step| done.contains?(step.name) }.reverse.take(count)
+        match targets.reduce(Ok([])) { |checked, step| checked.flatMap { |plans| undoing(step).map { |plan| plans + [(step.name, plan)] } } } do
+          Error(reason) => Error(reason)
+          Ok(plans) => undone(connection, plans, [])
+        end
+      end
+    end
+  end
+end
+
+# The names in a database's ledger, creating the ledger when it is missing.
+#
+# Whether it is missing is found by reading it, not with CREATE TABLE IF NOT
+# EXISTS: PostgreSQL answers that with a notice when the table is there, and
+# over ODBC a notice arrives as an error.
+recorded : Any -> Result<[String], String>
+foul recorded(connection) do
+  let reading = Harmat.Odbc.plain("SELECT name FROM ${LEDGER}")
+  match Harmat.Odbc.query(connection, reading) do
+    Ok(rows) => Ok(rows.map { |row| row.first.or("") })
+    Error(_) => do
+      let ledger = CreateTable(LEDGER, [
+        Column { label: "name", storage: Characters, key?: true },
+        Column { label: "parents", storage: Characters },
+        Column { label: "applied_at", storage: Characters }
+      ])
+      match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(sqlOf(ledger))) do
+        Error(reason) => Error(reason)
+        Ok(_) => Harmat.Odbc.query(connection, reading).map { |rows|
+          rows.map { |row| row.first.or("") }
+        }
+      end
+    end
+  end
+end
+
+private do
+  # Moves migrations from `waiting` to `placed` one at a time: whichever has
+  # every parent placed already, first by name. None ready with some still
+  # waiting means they wait on each other.
+  sorted : [Migration] -> [Migration] -> Result<[Migration], String>
+  let sorted(waiting, placed) do
+    return Ok(placed) if waiting.empty?
+
+    let settled = placed.map { |step| step.name }
+    let ready = waiting.filter { |step| step.parents.all? { |parent| settled.contains?(parent) } }
+    match ready.map { |step| step.name }.sort.first do
+      None => Error("${quotedNames(waiting)} follow each other in a loop")
+      Just(name) => sorted(waiting.reject { |step| step.name == name }, placed + waiting.filter { |step| step.name == name })
+    end
+  end
+
+  foul undone(connection: Any, plans: [(String, [String])], names: [String]) -> Result<[String], String> do
+    match plans do
+      [] => Ok(names)
+      [(name, plan) | rest] => match each(connection, plan) do
+        Error(reason) => Error("rolling back \"${name}\" failed: ${reason}")
+        Ok(_) => match Harmat.Odbc.execute(connection, Harmat.Odbc.deleting(table(LEDGER), [Harmat.Schema.text("name").eqTo(name)])) do
+          Error(reason) => Error(reason)
+          Ok(_) => undone(connection, rest, names + [name])
+        end
+      end
+    end
+  end
+
+  repeated : [String] -> [String]
+  let repeated(names) = names.filter { |name| names.count { |other| other == name } > 1 }.uniq
+
+  quotedNames : [Migration] -> String
+  let quotedNames(steps) = steps.map { |step| "\"${step.name}\"" }.join(" and ")
+
+  indexName : String -> [String] -> String
+  let indexName(name, columns) = "${name}_${columns.join("_")}_index"
+
+
+  foul applied(connection: Any, pending: [Migration], names: [String]) -> Result<[String], String> do
+    match pending do
+      [] => Ok(names)
+      [step | rest] => match ran(connection, step) do
+        Ok(_) => applied(connection, rest, names + [step.name])
+        Error(reason) => Error("migration \"${step.name}\" failed: ${reason}")
+      end
+    end
+  end
+
+  foul ran(connection: Any, step: Migration) -> Result<Integer, String> do
+    match each(connection, statements(step)) do
+      Error(reason) => Error(reason)
+      Ok(_) => Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table(LEDGER), [
+        ("name", Text(step.name)),
+        ("parents", Text(step.parents.join(","))),
+        ("applied_at", Text("${DateTime.utcNow()}"))
+      ]))
+    end
+  end
+
+  foul each(connection: Any, pending: [String]) -> Result<Integer, String> do
+    match pending do
+      [] => Ok(0)
+      [statement | rest] => match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(statement)) do
+        Ok(_) => each(connection, rest)
+        Error(reason) => Error(reason)
+      end
+    end
+  end
+end

@@ -7,6 +7,9 @@
 # eq. Comparing an integer column to a string still fails the
 # build — at the method call, not in a phantom.
 #
+# `eq` is `eqTo` under the name queries read best with:
+# `.where(Users.email.eq(email))`.
+#
 # Nullable kinds offer eqTo plus isNull. There is deliberately no
 # way to spell `= NULL`: Kex None == None is true, SQL
 # NULL = NULL is unknown, so the builder never renders one.
@@ -35,6 +38,9 @@ module Harmat.Schema do
   # One WHERE fragment: an equality with a bound value, or IS NULL.
   type Cond = EqCond(String, Any) | NullCond(String)
 
+  # One value headed for a column in an INSERT or UPDATE.
+  type Value = Text(String) | Whole(Integer)
+
   integer : String -> IntColumn
   let integer(name: String) -> Harmat.Schema.IntColumn = IntColumn { label: name }
 
@@ -50,19 +56,38 @@ module Harmat.Schema do
   table : String -> Table
   let table(name: String) -> Harmat.Schema.Table = Table { label: name }
 
+  # `storing` is the write-side twin of `eqTo`: the column paired with a
+  # value of its own type, for `Harmat.Odbc.inserting` and `updating`.
+  # Storing a string in an integer column fails the build the same way
+  # comparing them does.
   make IntColumn do
     eqTo :> Integer -> Cond
     let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    eq :> Integer -> Cond
+    let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    storing :> Integer -> (String, Value)
+    let storing(val: Integer) -> (String, Harmat.Schema.Value) = (@label, Whole(val))
   end
 
   make TextColumn do
     eqTo :> String -> Cond
     let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    eq :> String -> Cond
+    let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    storing :> String -> (String, Value)
+    let storing(val: String) -> (String, Harmat.Schema.Value) = (@label, Text(val))
   end
 
   make OptIntColumn do
     eqTo :> Integer -> Cond
     let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    eq :> Integer -> Cond
+    let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)
@@ -71,6 +96,9 @@ module Harmat.Schema do
   make OptTextColumn do
     eqTo :> String -> Cond
     let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    eq :> String -> Cond
+    let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)

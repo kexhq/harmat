@@ -1,0 +1,109 @@
+# Harmat.Column — the columns of a table, as a migration or a table
+# declaration writes them.
+#
+#   createTable(:users) do |t|
+#     [
+#       t.text(:id, primaryKey: true),
+#       t.text(:email),
+#       t.text(:nickname, default: :null, nullable: true),
+#       t.text(:role, default: "member", oneOf: ["member", "admin"]),
+#       t.bigint(:credit, default: 0),
+#       t.boolean(:active, default: true)
+#     ]
+#   end
+#
+# `t` is a `TableBuilder`; each of its methods makes one `Column`. A column
+# is NOT NULL unless `nullable: true`. Options may be given in any subset.
+#
+# The block returns its columns as a list: a block that takes a parameter
+# does not collect its lines the way a `Block<[A]>` does (kexhq/kex#469).
+module Harmat.Column
+
+# How a column stores its values.
+type Storage = Characters | Wide | Whole | Flag
+
+# One column of a table being created or extended.
+record Column do
+  label : String
+  storage : Storage
+  nullable? : Bool = false
+  key? : Bool = false
+  # The DEFAULT, already an SQL literal.
+  fallback : String? = None
+  # The only values a CHECK lets in; empty means anything.
+  allowed : [String] = []
+end
+
+# What a table block is handed: the thing columns are asked of.
+record TableBuilder do
+  table : String = ""
+end
+
+# Tables, columns, indexes and migrations are named with atoms in the DSL and
+# kept as text from there on.
+named : Atom -> String
+let named(word) do
+  let shown = "${word}"
+  shown.startsWith?(":") then shown.drop(1) else shown
+end
+
+make TableBuilder do
+  # Text of any length.
+  #
+  # `text`, not `string`: a make-block method named `string` that has
+  # defaulted parameters makes every other `.string` call in the program —
+  # the standard library's own included — compile to a call of the wrong
+  # arity (kexhq/kex#475). Rails has `t.text` too, and TEXT is what this is.
+  let text(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none, oneOf: [String] = []) -> Column do
+    Column { label: named(label), storage: Characters, key?: primaryKey, nullable?: nullable, fallback: literal(Characters, default), allowed: oneOf }
+  end
+
+  # A 64-bit integer.
+  let bigint(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none) -> Column do
+    Column { label: named(label), storage: Wide, key?: primaryKey, nullable?: nullable, fallback: literal(Wide, default) }
+  end
+
+  # A 32-bit integer.
+  let int(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none) -> Column do
+    Column { label: named(label), storage: Whole, key?: primaryKey, nullable?: nullable, fallback: literal(Whole, default) }
+  end
+
+  # True or false.
+  let boolean(label: Atom, nullable: Bool = false, default: Any = :none) -> Column do
+    Column { label: named(label), storage: Flag, nullable?: nullable, fallback: literal(Flag, default) }
+  end
+end
+
+# The SQL of a column inside CREATE TABLE or ADD COLUMN.
+columnSql : Column -> String
+let columnSql(column) do
+  let key = column.key? then ["PRIMARY KEY"] else []
+  let presence = column.nullable? || column.key? then [] else ["NOT NULL"]
+  let fallback = match column.fallback do
+    Just(text) => ["DEFAULT ${text}"]
+    None => []
+  end
+  let choices = column.allowed.map { |value| quoted(value) }.join(", ")
+  let check = column.allowed.empty? then [] else ["CHECK (${column.label} IN (${choices}))"]
+  ([column.label, storageSql(column.storage)] + key + presence + fallback + check).join(" ")
+end
+
+# A default as SQL: none when it was not given, NULL for `:null`, and
+# anything else written the way the column's own type writes a value.
+literal : Storage -> Any -> String?
+let literal(storage, :none) = None
+let literal(storage, :null) = Just("NULL")
+let literal(Characters, value) = Just(quoted("${value}"))
+let literal(Flag, value) = Just(value == true then "TRUE" else "FALSE")
+let literal(storage, value) = Just("${value}")
+
+private do
+  quoted : String -> String
+  let quoted(value) = "'${value.replace("'", "''")}'"
+
+  storageSql : Storage -> String
+  let storageSql(Characters) = "TEXT"
+  let storageSql(Wide) = "BIGINT"
+  let storageSql(Whole) = "INTEGER"
+  let storageSql(Flag) = "BOOLEAN"
+end

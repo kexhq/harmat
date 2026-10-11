@@ -81,7 +81,7 @@ module Harmat.Query do
         var first = true
 
         @conditions.each do |c|
-          let prefix = if first then " WHERE " else " AND " end
+          let prefix = first then " WHERE " else " AND "
           match c do
             EqCond(col, val) => do
               sql = sql + "${prefix}${col} = ?"
@@ -112,63 +112,6 @@ module Harmat.Query do
 
         Query { statement: sql, params: params }
       end
-    end
-  end
-
-  # The `sql` tag. Deliberately NOT in `compiled do`: the validator
-  # only collects plain definitions, so a compiled tag would keep its
-  # runtime behavior but silently lose compile-time checking — and
-  # checking is the tag's whole point. `$`-holes become bound params,
-  # never text.
-  #
-  #   sql`SELECT name FROM users WHERE id = ?`
-  #   sql$`UPDATE users SET age = ${age} WHERE id = ${id}`
-  sql : [String] -> [Any] -> Query
-  let sql(parts: [String], values: [Any]) -> Harmat.Query.Query do
-    let tail = values.mapIndexed do |_, i|
-      "?" + parts.at(i + 1).or("")
-    end
-    Query { statement: parts.at(0).or("") + tail.join(""), params: values }
-  end
-
-  # Compile-time syntax check for `sql` literals. Pure by requirement:
-  # the compiler evaluates it on the tree-walk interpreter while
-  # building, so it cannot touch the clock, the filesystem, or a DB.
-  # Semantics (do these tables exist?) belong to the snapshot audit.
-  validateSql : String -> [TaggedValidation.Issue]
-  let validateSql(source: String) -> [TaggedValidation.Issue] do
-    return [TaggedValidation.fatal("empty SQL literal")] if source.trim.empty?
-
-    let head = source.trim.upperCase
-    let keywords = [
-      "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE",
-      "ALTER", "DROP", "WITH", "EXPLAIN"
-    ]
-    let known = keywords.any? { |k| head.startsWith?(k) }
-    return [TaggedValidation.fatal("SQL must begin with a statement keyword")] if !known
-
-    let code = Harmat.Query.outsideQuotes(source)
-    let opens = code.split("(").count - 1
-    let closes = code.split(")").count - 1
-    return [TaggedValidation.fatal("unbalanced parentheses")] if opens != closes
-
-    let quotes = source.split("'").count - 1
-    return [TaggedValidation.fatal("unterminated string literal")] if quotes.modulo(2) != 0
-
-    return []
-  end
-
-  private do
-    # The literal with quoted regions removed, so a parenthesis inside
-    # 'text' cannot unbalance the check. Splitting on a quote keeps
-    # even-indexed segments outside strings; doubled '' escapes are
-    # parity-neutral, so they stay correct for free.
-    outsideQuotes : String -> String
-    let outsideQuotes(source: String) -> String do
-      let kept = source.split("'").mapIndexed do |seg, i|
-        if i.modulo(2) == 0 then seg else "" end
-      end
-      return kept.join("")
     end
   end
 end
