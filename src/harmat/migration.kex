@@ -38,13 +38,14 @@
 # table is dropped, an added column removed, an added index dropped. That
 # restores the schema's shape, never the rows a dropped column or table held.
 # The only operations it cannot undo are the ones that threw information away
-# — a `dropTable` that was not told the table's columns, a `runSql` given no
-# inverse — and those are refused before anything is touched; `irreversible`
+# — a `dropTable` that was not told the table's columns, an `execute` given
+# no inverse — and those are refused before anything is touched; `irreversible`
 # lists them so a spec can refuse them before they are merged at all.
 module Harmat.Migration
 
 using Harmat.Schema, only: [table, Text]
 using Harmat.Column, only: [Column, Storage, Characters, Wide, Whole, Flag, TableBuilder, named]
+using Harmat.Sql, only: [Sql]
 
 # One schema change.
 type Operation = CreateTable(String, [Column])
@@ -126,14 +127,20 @@ let removeIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation 
   RemoveIndex(named(name), columns.map { |column| named(column) }, unique)
 end
 
-# SQL the DSL has no word for, run as written. Keep it standard: Harmat does
-# not know which database will run it. Cannot be rolled back.
-runSql : String -> Operation
-let runSql(statement) = Execute(statement, None)
+# SQL the DSL has no word for, run as written:
+#
+#   execute(sql`UPDATE users SET role = 'member'`)
+#
+# It is an `sql` literal and not a string, so it is checked when the
+# migration is built. Keep it standard: Harmat does not know which database
+# will run it. It is run as its text alone — a migration binds no values, so
+# write them into the statement. Cannot be rolled back.
+execute : Sql -> Operation
+let execute(statement) = Execute(statement.statement.trim, None)
 
 # The same, with the statement that undoes it.
-runSql : String -> String -> Operation
-let runSql(statement, undo: String) = Execute(statement, Just(undo))
+execute : Sql -> Sql -> Operation
+let execute(statement, undo: Sql) = Execute(statement.statement.trim, Just(undo.statement.trim))
 
 # --- Rendering --------------------------------------------------------------
 
@@ -163,7 +170,7 @@ let reversed(RemoveColumn(name, column)) = Ok(AddColumn(name, column))
 let reversed(AddIndex(name, columns, unique?)) = Ok(RemoveIndex(name, columns, unique?))
 let reversed(RemoveIndex(name, columns, unique?)) = Ok(AddIndex(name, columns, unique?))
 let reversed(Execute(statement, Just(undo))) = Ok(Execute(undo, Just(statement)))
-let reversed(Execute(statement, None)) = Error("runSql was given no `undo:` statement for: ${statement}")
+let reversed(Execute(statement, None)) = Error("execute was given no `undo:` statement for: ${statement}")
 
 # The statements that undo a migration, last operation first — or the first
 # reason one of its operations cannot be undone.

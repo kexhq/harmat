@@ -9,6 +9,7 @@
 module Harmat do
   export Harmat.Schema
   export Harmat.Query
+  export Harmat.Sql
   export Harmat.Odbc
   export Harmat.Column
   export Harmat.Migration

@@ -1,5 +1,6 @@
 using Harmat.Schema, only: [table, integer, text, optInteger, optText]
-using Harmat.Query, only: [select, sql]
+using Harmat.Query, only: [select]
+using Harmat.Sql, only: [sql]
 
 describe "Harmat.Query builder" do
   it "renders a static query with no params" do
@@ -40,7 +41,7 @@ describe "Harmat.Query builder" do
   end
 end
 
-describe "Harmat.Query sql tag" do
+describe "Harmat.Sql tag" do
   it "passes static text through" do
     let q = sql`SELECT name FROM users WHERE id = ?`
     Assert.equal(q.statement, "SELECT name FROM users WHERE id = ?")

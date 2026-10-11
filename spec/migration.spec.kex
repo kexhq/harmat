@@ -1,5 +1,6 @@
 using Harmat.Migration, as: Migration
-using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, runSql]
+using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, execute]
+using Harmat.Sql, only: [sql]
 
 # The SQLite ODBC driver this spec runs against; HARMAT_SPEC_DSN names
 # any other database instead.
@@ -68,13 +69,19 @@ describe("Harmat.Migration rollback") do
     end
     Assert.truthy(Harmat.Migration.undoing(forgetful).error?)
     let raw = Migration.define :raw, follows: :add_indexes do
-      runSql("UPDATE users SET role = 'member'")
+      execute(sql`UPDATE users SET role = 'member'`)
     end
     Assert.truthy(Harmat.Migration.undoing(raw).error?)
     let paired = Migration.define :paired, follows: :add_indexes do
-      runSql("UPDATE users SET credit = credit + 1", undo: "UPDATE users SET credit = credit - 1")
+      execute(
+        sql`
+          UPDATE users
+          SET credit = credit + 1`,
+        undo: sql`UPDATE users SET credit = credit - 1`
+      )
     end
     Assert.equal(Harmat.Migration.undoing(paired), Ok(["UPDATE users SET credit = credit - 1"]))
+    Assert.equal(Harmat.Migration.statements(paired), ["UPDATE users\nSET credit = credit + 1"])
   end
 end
 
