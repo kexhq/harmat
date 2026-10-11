@@ -1,0 +1,73 @@
+# The `harmat:migration` generator, as Tey's plugin host runs it: the
+# invocation on stdin, the files to write on stdout. It reads the
+# application's existing migrations to find the next number and the current
+# head, and writes nothing itself.
+#
+#   tey generate harmat:migration --name add_avatars --force
+#
+# `--force` because the list in db/migrations.kex already exists and is
+# rewritten with the new entry.
+using JSON
+using Harmat.Generators.Migration, only: [Existing]
+
+let member(object: Any, key: String) -> Any do
+  match object[key] do
+    Just(value) => value
+    None => None
+  end
+end
+
+let text(object: Any, key: String) -> String do
+  match object do
+    None => ""
+    _ => match object[key] do
+      Just(value) => "${value}"
+      None => ""
+    end
+  end
+end
+
+foul refused(reason: String) -> Void do
+  IO.printError("harmat:migration: ${reason}")
+  System.exit(1)
+end
+
+# The migrations already in the application.
+foul existing(directory: String) -> [Existing] do
+  let files = FS.Directory.files(directory).or([]).map { |path| FS.Path.basename(path) }.filter { |file| file.endsWith?(".kex") }.sort
+  return files.flatMap { |file|
+    match Harmat.Generators.Migration.described(file, FS.File.read(FS.Path.join(directory, file)).or("")) do
+      Just(migration) => [migration]
+      None => []
+    end
+  }
+end
+
+main do
+  let invocation = JSON.parse(IO.getLine.or("")).or({})
+  let context = member(invocation, "context")
+  let root = text(context, "workspaceRoot")
+  let name = text(member(context, "options"), "name")
+  if !Harmat.Generators.Migration.valid?(name)
+    refused("give the migration a name in lower-case words joined by underscores: --name add_avatars")
+  end
+
+  let found = existing(FS.Path.join(root, Harmat.Generators.Migration.DIRECTORY))
+  if found.any? { |migration| migration.name == name }
+    refused("there is already a migration named `${name}`")
+  end
+  let heads = Harmat.Generators.Migration.heads(found)
+  if heads.count > 1
+    refused("the history has ${heads.count} heads (${heads.join(", ")}); join them with a Migration.merge before adding to it")
+  end
+  let number = found.map { |migration| migration.number }.reduce(0) { |highest, each| each > highest then each else highest } + 1
+  let path = "${Harmat.Generators.Migration.DIRECTORY}/${Harmat.Generators.Migration.numbered(number)}_${name}.kex"
+  let file = { kind: "write", path: path, content: Harmat.Generators.Migration.source(number, name, heads.first.or("")) }
+
+  let listing = FS.File.read(FS.Path.join(root, Harmat.Generators.Migration.LISTING)).or("")
+  let operations = match Harmat.Generators.Migration.listed(listing, number, name) do
+    Just(updated) => [file, { kind: "write", path: Harmat.Generators.Migration.LISTING, content: updated }]
+    None => [file]
+  end
+  IO.printLine(JSON.stringify({ version: 1, operations: operations }))
+end

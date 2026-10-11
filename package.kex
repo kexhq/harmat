@@ -3,7 +3,14 @@ package "harmat" do
   description("A drizzle-like typed query builder for Kex")
   kex(">= 0.3.0")
 
-  # Project commands, run as "tey NAME" and listed by "tey help":
-  # command("bench", run: "script/bench.kex", description: "Run the benchmarks")
+  # Harmat's generators, as a Tey plugin: from an application that depends on
+  # Harmat, `tey generate harmat:migration --name add_avatars --force` writes
+  # the next numbered migration, following the current head, and lists it.
+  plugin namespace: "harmat", tey: ">= 0.2" do
+    capabilities([FS.Write.workspace])
 
+    generator("migration", entrypoint: "generators/migration.kex") do
+      option("name", type: String)
+    end
+  end
 end

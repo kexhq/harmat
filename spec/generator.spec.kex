@@ -1,0 +1,51 @@
+using Harmat.Generators.Migration, only: [Existing, described, heads, numbered, titled, valid?, listed]
+
+let listing = "# Every migration.\n#\n#   db/migrate/N0001_create_users.kex\n#   db/migrate/N0002_create_sessions.kex        ← head\nmodule DB.Migrations\n\nall : [Migration]\nlet all = [\n  DB.Migrate.N0001CreateUsers.change,\n  DB.Migrate.N0002CreateSessions.change\n]\n"
+
+describe("Harmat.Generators.Migration") do
+  it("reads a migration's number, name and parent out of its file") do
+    let first = described("N0001_create_users.kex", "module X\n\nlet change = Migration.define :create_users do\nend\n").try
+    Assert.equal(first.number, 1)
+    Assert.equal(first.name, "create_users")
+    Assert.equal(first.parents, [])
+    let second = described("N0002_create_sessions.kex", "let change = Migration.define :create_sessions, follows: :create_users do\nend\n").try
+    Assert.equal(second.parents, ["create_users"])
+    let joined = described("N0005_merge_a_and_b.kex", "let change = Migration.merge(:merge_a_and_b, [:add_a, :add_b])\n").try
+    Assert.equal(joined.name, "merge_a_and_b")
+    Assert.equal(joined.parents, ["add_a", "add_b"])
+    Assert.equal(described("README.md", "nothing"), None)
+  end
+
+  it("finds the head, and two after a merge of branches") do
+    let users = Existing { number: 1, name: "create_users" }
+    let sessions = Existing { number: 2, name: "create_sessions", parents: ["create_users"] }
+    let avatars = Existing { number: 3, name: "add_avatars", parents: ["create_users"] }
+    Assert.equal(heads([users, sessions]), ["create_sessions"])
+    Assert.equal(heads([users, sessions, avatars]), ["create_sessions", "add_avatars"])
+    Assert.equal(heads([]), [])
+  end
+
+  it("names files and modules") do
+    Assert.equal(numbered(7), "N0007")
+    Assert.equal(numbered(123), "N0123")
+    Assert.equal(titled("add_holdings_owner"), "AddHoldingsOwner")
+    Assert.truthy(valid?("add_avatars"))
+    Assert.falsy(valid?("AddAvatars"))
+    Assert.falsy(valid?("add avatars"))
+    Assert.falsy(valid?(""))
+  end
+
+  it("writes a migration that follows the head") do
+    let text = Harmat.Generators.Migration.source(3, "add_avatars", "create_sessions")
+    Assert.truthy(text.contains?("module DB.Migrate.N0003AddAvatars"))
+    Assert.truthy(text.contains?("let change = Migration.define :add_avatars, follows: :create_sessions do"))
+    Assert.truthy(Harmat.Generators.Migration.source(1, "create_users", "").contains?("Migration.define :create_users do"))
+  end
+
+  it("adds the migration to the list and moves the head note") do
+    let updated = listed(listing, 3, "add_avatars").try
+    Assert.truthy(updated.contains?("  DB.Migrate.N0002CreateSessions.change,\n  DB.Migrate.N0003AddAvatars.change\n]"))
+    Assert.truthy(updated.contains?("#   db/migrate/N0002_create_sessions.kex\n#   db/migrate/N0003_add_avatars.kex        ← head"))
+    Assert.equal(listed("module DB.Migrations\n", 3, "add_avatars"), None)
+  end
+end
