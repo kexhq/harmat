@@ -36,7 +36,8 @@ make Echoing, implement: Harmat.Connection do
 end
 
 foul dsn(file: String) -> String do
-  ENV.get("HARMAT_SPEC_DSN").or("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=${file}")
+  let driver = ENV.get("HARMAT_SPEC_DRIVER").or("/opt/homebrew/lib/libsqlite3odbc.dylib")
+  ENV.get("HARMAT_SPEC_DSN").or("Driver=${driver};Database=${file}")
 end
 
 describe("Harmat.Database statements") do

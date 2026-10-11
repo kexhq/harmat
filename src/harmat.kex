@@ -1,11 +1,11 @@
-# Harmat — a drizzle-like query builder for Kex.
+# Harmat — a database layer for Kex, in the way Drizzle writes queries.
 #
-# Declare tables once (table-first schema DSL generating row records),
-# build typed queries that collapse to static text at compile time,
-# run them through one ODBC boundary (Harmat.Odbc) that reaches
-# SQLite and PostgreSQL alike, and keep the schema current with
-# Harmat.Migration. Nullable columns are Optional and only spell
-# IS NULL; `= NULL` is inexpressible.
+# Tables are declared in Kex (Harmat.Table), queries are built against them
+# (Harmat.Database) and sent through a capability an application installs
+# its database as (Harmat.Connection), and the schema is kept current with
+# migrations that are data (Harmat.Migration). Everything reaches the
+# database through one ODBC boundary (Harmat.Odbc) in standard SQL, so
+# SQLite and PostgreSQL are the same to it. README.md is the guide.
 module Harmat do
   export Harmat.Schema
   export Harmat.Query
