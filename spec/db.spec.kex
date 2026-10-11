@@ -40,6 +40,11 @@ describe("Harmat.Db statements") do
                  Error("SELECT id, email, owner, credit FROM users WHERE owner = ? AND credit = ? LIMIT 1 [ada, 5]"))
   end
 
+  it("orders largest first") do
+    Assert.equal(db.select([:id]).from(users).orderByDescending([:credit, :id]).limit(3).all,
+                 Error("SELECT id FROM users ORDER BY credit DESC, id DESC LIMIT 3 []"))
+  end
+
   it("inserts a row given by column name, each value as its column stores it") do
     Assert.equal(db.insert(users).values({id: "u1", email: "a@b.co", credit: 7}).run,
                  Error("INSERT INTO users (credit, email, id) VALUES (CAST(? AS BIGINT), ?, ?) [7, a@b.co, u1]"))
