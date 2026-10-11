@@ -81,7 +81,7 @@ module Harmat.Query do
         var first = true
 
         @conditions.each do |c|
-          let prefix = if first then " WHERE " else " AND " end
+          let prefix = first then " WHERE " else " AND "
           match c do
             EqCond(col, val) => do
               sql = sql + "${prefix}${col} = ?"
