@@ -1,12 +1,12 @@
-using Harmat.Database, only: [Statement]
+using Harmat.Odbc, only: [Statement]
 
 record Echo do
   prefix : String = "echo"
 end
 
 make Echo, implement: Harmat.Connection do
-  foul run(statement: Harmat.Database.Statement) -> Result<Integer, String> = Error("${@prefix} ${statement.statement}")
-  foul ask(statement: Harmat.Database.Statement) -> Result<[[String]], String> = Error("${@prefix} ${statement.statement}")
+  foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> = Error("${@prefix} ${statement.statement}")
+  foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> = Error("${@prefix} ${statement.statement}")
 end
 
 foul asked() -> Result<[[String]], String> = Harmat.Connection.ask(Statement { statement: "SELECT 1" })

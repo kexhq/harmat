@@ -1,11 +1,11 @@
 # Harmat.Connection — the database, as a capability.
 #
-# Every statement `Harmat.Db` builds is sent through here. Outside any
+# Every statement `Harmat.Database` builds is sent through here. Outside any
 # `with` there is no database; an application installs the one it has for
 # the region that serves requests, and a spec installs one that records
 # statements instead of running them:
 #
-#   with Harmat.Connection = Harmat.Db.Direct { connection: connection } do
+#   with Harmat.Connection = Harmat.Database.Direct { connection: connection } do
 #     site.start(host, port)
 #   end
 #
@@ -14,8 +14,8 @@
 # their actions have to be built inside it too, not only served there.
 capability Harmat.Connection do
   # Runs a statement that changes rows; how many it changed.
-  foul run(statement: Harmat.Database.Statement) -> Result<Integer, String> = Error("no database connected")
+  foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> = Error("no database connected")
 
   # Runs a SELECT; its rows, each as its cells in column order.
-  foul ask(statement: Harmat.Database.Statement) -> Result<[[String]], String> = Error("no database connected")
+  foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> = Error("no database connected")
 end

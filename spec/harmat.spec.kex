@@ -63,25 +63,25 @@ end
 # Columns are spelled out in full below: beside `storing`, which exists for
 # two column kinds, a bare `integer(...)` is resolved to the prelude's
 # `integer : Range<Integer> -> Integer` instead of Harmat.Schema's.
-describe("Harmat.Database statements") do
+describe("Harmat.Odbc statements") do
   let users = table("users")
 
   it("inserts typed column values as bound parameters") do
-    let q = Harmat.Database.inserting(users, [Harmat.Schema.text("name").storing("ada"), Harmat.Schema.integer("age").storing(36)])
+    let q = Harmat.Odbc.inserting(users, [Harmat.Schema.text("name").storing("ada"), Harmat.Schema.integer("age").storing(36)])
     Assert.equal(q.statement, "INSERT INTO users (name, age) VALUES (?, CAST(? AS BIGINT))")
     Assert.equal(q.params, ["ada", "36"])
   end
 
   it("updates the rows a condition selects") do
-    let q = Harmat.Database.updating(users, [Harmat.Schema.integer("age").storing(37)], [Harmat.Schema.text("name").eqTo("ada")])
+    let q = Harmat.Odbc.updating(users, [Harmat.Schema.integer("age").storing(37)], [Harmat.Schema.text("name").eqTo("ada")])
     Assert.equal(q.statement, "UPDATE users SET age = CAST(? AS BIGINT) WHERE name = ?")
     Assert.equal(q.params, ["37", "ada"])
   end
 
   it("deletes and selects with the same conditions") do
-    let gone = Harmat.Database.deleting(users, [Harmat.Schema.text("name").eqTo("ada"), Harmat.Schema.optInteger("age").isNull])
+    let gone = Harmat.Odbc.deleting(users, [Harmat.Schema.text("name").eqTo("ada"), Harmat.Schema.optInteger("age").isNull])
     Assert.equal(gone.statement, "DELETE FROM users WHERE name = ? AND age IS NULL")
-    let listed = Harmat.Database.selecting(users, ["id", "name"], [], ["name"])
+    let listed = Harmat.Odbc.selecting(users, ["id", "name"], [], ["name"])
     Assert.equal(listed.statement, "SELECT id, name FROM users ORDER BY name")
     Assert.equal(listed.params, [])
   end

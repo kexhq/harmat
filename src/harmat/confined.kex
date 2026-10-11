@@ -1,18 +1,18 @@
 # Harmat.Confined — where confined statements start.
 #
-#   let hers = Harmat.Db.within(Users.owner.eq(owner))
+#   let hers = Harmat.Database.within(Users.owner.eq(owner))
 #   hers.update(users).set({credit: 5}).where(Users.id.eq(id)).run
 #
 # Every statement started here carries the conditions it was made with, so
 # it cannot reach a row they do not hold for. (Its own module, apart from
-# `Harmat.Db`: a method and a function of one name and arity cannot share
-# one, and `Db.select(columns)` is such a function.)
+# `Harmat.Database`: a method and a function of one name and arity cannot share
+# one, and `Database.select(columns)` is such a function.)
 module Harmat.Confined
 
 using Harmat.Schema, only: [Cond]
 using Harmat.Table, only: [Definition]
 using Harmat.Column, only: [named]
-using Harmat.Db, only: [Select, Insert, Update, Delete]
+using Harmat.Database, only: [Select, Insert, Update, Delete]
 
 record Confined do
   confines : [Cond] = []

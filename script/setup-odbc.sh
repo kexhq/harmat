@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds Erlang's ODBC port program (odbcserver) for an OTP install that was
-# packaged without it, into a directory `Harmat.Database.sideload` can load.
+# packaged without it, into a directory `Harmat.Odbc.sideload` can load.
 #
 # Kex 0.4 needs OTP 29+, and Homebrew's erlang bottle ships lib/odbc with its
 # .beam files but no priv/bin/odbcserver, so odbc:connect/2 dies with

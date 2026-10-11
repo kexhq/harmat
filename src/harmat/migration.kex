@@ -235,7 +235,7 @@ let head(steps) = ordered(steps).map { |chain| heads(chain).first.or("") }
 # ledger does not list. The names this call ran — or the first error, after
 # which nothing later was attempted.
 #
-# @param connection [Any] an open `Harmat.Database` connection
+# @param connection [Any] an open `Harmat.Odbc` connection
 # @param steps [[Migration]] every migration of the application, in any order
 # @return [Result<[String], String>] the migrations applied, oldest first
 migrate : Any -> [Migration] -> Result<[String], String>
@@ -283,9 +283,9 @@ foul recorded(connection) do
     Column { label: "applied_at", storage: Characters }
   ])
   let create = sqlOf(ledger).replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")
-  match Harmat.Database.execute(connection, Harmat.Database.plain(create)) do
+  match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(create)) do
     Error(reason) => Error(reason)
-    Ok(_) => Harmat.Database.query(connection, Harmat.Database.plain("SELECT name FROM ${LEDGER}")).map { |rows|
+    Ok(_) => Harmat.Odbc.query(connection, Harmat.Odbc.plain("SELECT name FROM ${LEDGER}")).map { |rows|
       rows.map { |row| row.first.or("") }
     }
   end
@@ -312,7 +312,7 @@ private do
       [] => Ok(names)
       [(name, plan) | rest] => match each(connection, plan) do
         Error(reason) => Error("rolling back \"${name}\" failed: ${reason}")
-        Ok(_) => match Harmat.Database.execute(connection, Harmat.Database.deleting(table(LEDGER), [Harmat.Schema.text("name").eqTo(name)])) do
+        Ok(_) => match Harmat.Odbc.execute(connection, Harmat.Odbc.deleting(table(LEDGER), [Harmat.Schema.text("name").eqTo(name)])) do
           Error(reason) => Error(reason)
           Ok(_) => undone(connection, rest, names + [name])
         end
@@ -343,7 +343,7 @@ private do
   foul ran(connection: Any, step: Migration) -> Result<Integer, String> do
     match each(connection, statements(step)) do
       Error(reason) => Error(reason)
-      Ok(_) => Harmat.Database.execute(connection, Harmat.Database.inserting(table(LEDGER), [
+      Ok(_) => Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table(LEDGER), [
         ("name", Text(step.name)),
         ("parents", Text(step.parents.join(","))),
         ("applied_at", Text("${DateTime.utcNow()}"))
@@ -354,7 +354,7 @@ private do
   foul each(connection: Any, pending: [String]) -> Result<Integer, String> do
     match pending do
       [] => Ok(0)
-      [statement | rest] => match Harmat.Database.execute(connection, Harmat.Database.plain(statement)) do
+      [statement | rest] => match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(statement)) do
         Ok(_) => each(connection, rest)
         Error(reason) => Error(reason)
       end

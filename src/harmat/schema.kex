@@ -57,7 +57,7 @@ module Harmat.Schema do
   let table(name: String) -> Harmat.Schema.Table = Table { label: name }
 
   # `storing` is the write-side twin of `eqTo`: the column paired with a
-  # value of its own type, for `Harmat.Database.inserting` and `updating`.
+  # value of its own type, for `Harmat.Odbc.inserting` and `updating`.
   # Storing a string in an integer column fails the build the same way
   # comparing them does.
   make IntColumn do

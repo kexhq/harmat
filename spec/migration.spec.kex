@@ -121,8 +121,8 @@ end
 describe("Harmat.Migration against a database") do
   it("runs each migration once, a merged branch afterwards, and rolls back") do
     let file = "harmat_spec_${BEAM.erlang.system_time(:millisecond)}.db"
-    Harmat.Database.sideload(".odbc")
-    let connection = Harmat.Database.connect(dsn(file)).try
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
 
     Assert.equal(Harmat.Migration.migrate(connection, [createUsers, addNames]), Ok(["create_users", "add_names"]))
     Assert.equal(Harmat.Migration.migrate(connection, [createUsers, addNames]), Ok([]))

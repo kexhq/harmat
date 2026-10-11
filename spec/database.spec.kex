@@ -1,8 +1,8 @@
 using Harmat.Migration, as: Migration
 using Harmat.Table, as: Table
 using Harmat.Table, only: [Definition]
-using Harmat.Db, as: Db
-using Harmat.Db, only: [Direct, eq]
+using Harmat.Database, as: Database
+using Harmat.Database, only: [Direct, eq]
 using Harmat.Confined, only: [Confined]
 
 let users = Table.define :users do |t|
@@ -26,11 +26,11 @@ record Echoing do
 end
 
 make Echoing, implement: Harmat.Connection do
-  foul run(statement: Harmat.Database.Statement) -> Result<Integer, String> do
+  foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
     return Error("${statement.statement} ${statement.params}")
   end
 
-  foul ask(statement: Harmat.Database.Statement) -> Result<[[String]], String> do
+  foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
     return Error("${statement.statement} ${statement.params}")
   end
 end
@@ -39,57 +39,57 @@ foul dsn(file: String) -> String do
   ENV.get("HARMAT_SPEC_DSN").or("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=${file}")
 end
 
-describe("Harmat.Db statements") do
+describe("Harmat.Database statements") do
   it("selects every declared column, or the ones named") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.select().from(users).all, Error("SELECT id, email, owner, credit FROM users []"))
-      Assert.equal(Db.select([:id, :email]).from(users).where(eq(email, "a@b.co")).orderBy([:email]).limit(10).all,
+      Assert.equal(Database.select().from(users).all, Error("SELECT id, email, owner, credit FROM users []"))
+      Assert.equal(Database.select([:id, :email]).from(users).where(eq(email, "a@b.co")).orderBy([:email]).limit(10).all,
                    Error("SELECT id, email FROM users WHERE email = ? ORDER BY email LIMIT 10 [a@b.co]"))
-      Assert.equal(Db.select().from(users).where(eq(owner, "ada")).where(eq(credit, 5)).first,
+      Assert.equal(Database.select().from(users).where(eq(owner, "ada")).where(eq(credit, 5)).first,
                    Error("SELECT id, email, owner, credit FROM users WHERE owner = ? AND credit = ? LIMIT 1 [ada, 5]"))
     end
   end
 
   it("takes a condition asked of the column itself") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.select([:id]).from(users).where(owner.eq("ada")).where(credit.eq(5)).all,
+      Assert.equal(Database.select([:id]).from(users).where(owner.eq("ada")).where(credit.eq(5)).all,
                    Error("SELECT id FROM users WHERE owner = ? AND credit = ? [ada, 5]"))
     end
   end
 
   it("orders largest first") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.select([:id]).from(users).orderBy(descending: [:credit, :id]).limit(3).all,
+      Assert.equal(Database.select([:id]).from(users).orderBy(descending: [:credit, :id]).limit(3).all,
                    Error("SELECT id FROM users ORDER BY credit DESC, id DESC LIMIT 3 []"))
-      Assert.equal(Db.select([:id]).from(users).orderBy([:owner], descending: [:credit]).all,
+      Assert.equal(Database.select([:id]).from(users).orderBy([:owner], descending: [:credit]).all,
                    Error("SELECT id FROM users ORDER BY owner, credit DESC []"))
     end
   end
 
   it("inserts a row given by column name, each value as its column stores it") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.insert(users).values({id: "u1", email: "a@b.co", credit: 7}).run,
+      Assert.equal(Database.insert(users).values({id: "u1", email: "a@b.co", credit: 7}).run,
                    Error("INSERT INTO users (credit, email, id) VALUES (CAST(? AS BIGINT), ?, ?) [7, a@b.co, u1]"))
     end
   end
 
   it("updates and deletes the rows a condition selects") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.update(users).set({email: "new@b.co"}).where(eq(id, "u1")).run, Error("UPDATE users SET email = ? WHERE id = ? [new@b.co, u1]"))
-      Assert.equal(Db.delete(users).where(eq(id, "u1")).run, Error("DELETE FROM users WHERE id = ? [u1]"))
+      Assert.equal(Database.update(users).set({email: "new@b.co"}).where(eq(id, "u1")).run, Error("UPDATE users SET email = ? WHERE id = ? [new@b.co, u1]"))
+      Assert.equal(Database.delete(users).where(eq(id, "u1")).run, Error("DELETE FROM users WHERE id = ? [u1]"))
     end
   end
 
   it("refuses a column the table does not declare, and a select with no table") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Db.insert(users).values({nickname: "x"}).run, Error("users has no column nickname"))
-      Assert.equal(Db.select().all, Error("select() was not given a table: add .from(table)"))
+      Assert.equal(Database.insert(users).values({nickname: "x"}).run, Error("users has no column nickname"))
+      Assert.equal(Database.select().all, Error("select() was not given a table: add .from(table)"))
     end
   end
 
   it("carries a confining condition on every statement") do
     with Harmat.Connection = Echoing {} do
-      let hers : Confined = Db.within(eq(owner, "ada"))
+      let hers : Confined = Database.within(eq(owner, "ada"))
       Assert.equal(hers.select().from(users).where(eq(id, "u1")).all, Error("SELECT id, email, owner, credit FROM users WHERE owner = ? AND id = ? [ada, u1]"))
       Assert.equal(hers.update(users).set({credit: 1}).where(eq(id, "u1")).run, Error("UPDATE users SET credit = CAST(? AS BIGINT) WHERE owner = ? AND id = ? [1, ada, u1]"))
       Assert.equal(hers.delete(users).where(eq(id, "u1")).run, Error("DELETE FROM users WHERE owner = ? AND id = ? [ada, u1]"))
@@ -97,28 +97,28 @@ describe("Harmat.Db statements") do
   end
 end
 
-describe("Harmat.Db against a database") do
+describe("Harmat.Database against a database") do
   it("reads back what it wrote, as rows keyed by column") do
     let file = "harmat_db_${BEAM.erlang.system_time(:millisecond)}.db"
-    Harmat.Database.sideload(".odbc")
-    let connection = Harmat.Database.connect(dsn(file)).try
-    Harmat.Database.execute(connection, Harmat.Database.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
     with Harmat.Connection = Direct { connection: connection } do
-      Assert.equal(Db.insert(users).values({id: "u1", email: "ada@example.com", owner: "ada", credit: 90000000000}).run, Ok(1))
-      Assert.equal(Db.insert(users).values({id: "u2", email: "bob@example.com", owner: "bob"}).run, Ok(1))
-      Assert.equal(Db.select().from(users).orderBy([:id]).all, Ok([
+      Assert.equal(Database.insert(users).values({id: "u1", email: "ada@example.com", owner: "ada", credit: 90000000000}).run, Ok(1))
+      Assert.equal(Database.insert(users).values({id: "u2", email: "bob@example.com", owner: "bob"}).run, Ok(1))
+      Assert.equal(Database.select().from(users).orderBy([:id]).all, Ok([
         {"id": "u1", "email": "ada@example.com", "owner": "ada", "credit": "90000000000"},
         {"id": "u2", "email": "bob@example.com", "owner": "bob", "credit": "0"}
       ]))
-      Assert.equal(Db.select([:email]).from(users).where(eq(id, "u2")).first, Ok(Just({"email": "bob@example.com"})))
-      Assert.equal(Db.select().from(users).where(eq(id, "nobody")).first, Ok(None))
+      Assert.equal(Database.select([:email]).from(users).where(eq(id, "u2")).first, Ok(Just({"email": "bob@example.com"})))
+      Assert.equal(Database.select().from(users).where(eq(id, "nobody")).first, Ok(None))
 
-      let hers : Confined = Db.within(eq(owner, "ada"))
+      let hers : Confined = Database.within(eq(owner, "ada"))
       Assert.equal(hers.update(users).set({credit: 5}).where(eq(id, "u2")).run, Ok(0))
       Assert.equal(hers.delete(users).where(eq(id, "u2")).run, Ok(0))
       Assert.equal(hers.update(users).set({credit: 5}).where(eq(id, "u1")).run, Ok(1))
       Assert.equal(hers.select([:credit]).from(users).all, Ok([{"credit": "5"}]))
-      Assert.equal(Db.delete(users).where(eq(id, "u1")).run, Ok(1))
+      Assert.equal(Database.delete(users).where(eq(id, "u1")).run, Ok(1))
     end
     FS.File.delete(file)
   end

@@ -1,0 +1,192 @@
+# Harmat.Odbc — the one ODBC boundary, and the statements that cross it.
+#
+# Harmat does not know which database it is talking to. A connection is an
+# ODBC connection string and nothing else, so an application moves from a
+# SQLite file in development to PostgreSQL in production by handing `connect`
+# a different string — no dialect, no second code path, here or in callers:
+#
+#   Harmat.Odbc.connect("Driver=/path/libsqlite3odbc.dylib;Database=db/development.sqlite3")
+#   Harmat.Odbc.connect("Driver={PostgreSQL Unicode};Server=db;Database=app;Uid=app;Pwd=…")
+#
+# What keeps that true is that every statement built here is plain standard
+# SQL: values travel as bound parameters, and a number is cast in the
+# statement rather than typed by a driver-specific binding.
+#
+# Tables, columns and WHERE conditions are `Harmat.Schema`'s.
+#
+# This module does not import `Harmat.Query`: a `compiled do` module cannot be
+# expanded from a dependent package yet, and anything importing it inherits
+# the failure. `Statement` is the same shape as `Query` for that reason.
+module Harmat.Odbc
+
+using Harmat.Schema, only: [Table, Cond, EqCond, NullCond, Value, Text, Whole]
+
+# SQL text with one `?` per bound value. Every value travels as text and the
+# statement casts it where the column is not statement: standard SQL, and the one
+# spelling every driver accepts for a 64-bit integer.
+#
+# The fields are `statement` and `params`, as in `Harmat.Query.Query`, and
+# for the reason given there: a field called `text` is hijacked by any `text`
+# function in scope — Harmat.Schema's own column constructor, for one.
+record Statement do
+  statement : String
+  params : [String] = []
+end
+
+# What `odbc` reports when a bound UPDATE or DELETE matched no row: the driver
+# answers SQL_NO_DATA, which `odbcserver` turns into an error with no
+# diagnostics rather than `{updated, 0}`.
+let NOTHING_CHANGED = "No SQL-driver information available."
+
+# Opens the connection. The calling process owns it: Erlang's `odbc` only
+# answers the process that connected, so a `serving` process that keeps a
+# connection has to open it from one of its own slots.
+#
+# @param dsn [String] an ODBC connection string
+# @return [Result<Any, String>] the connection, or why there is none
+connect : String -> Result<Any, String>
+foul connect(dsn) do
+  BEAM.odbc.start()
+  match BEAM.odbc.connect(dsn.bytes, [(:binary_strings, :on), (:auto_commit, :on)]) do
+    (:ok, connection) => Ok(connection)
+    (:error, :port_program_executable_not_found) => Error("this Erlang has no ODBC port program — build one with Harmat's script/setup-odbc.sh and `sideload` it before connecting")
+    (:error, reason) => Error("cannot connect: ${reasonText(reason)}")
+  end
+end
+
+# Puts an ODBC port program built by script/setup-odbc.sh on the code path:
+# `directory` holds `odbc-<version>/{ebin,priv/bin/odbcserver}`. Needed only
+# where the Erlang install was packaged without one (Homebrew's is); call it
+# before the first `connect`. A directory that is not there is ignored.
+sideload : String -> Void
+foul sideload(directory) do
+  FS.Directory.directories(directory).or([]).each { |name|
+    BEAM.code.add_patha("${directory}/${FS.Path.basename(name)}/ebin".bytes)
+  }
+end
+
+# Runs a statement that changes rows; the count of rows it changed.
+execute : Any -> Statement -> Result<Integer, String>
+foul execute(connection, statement) do
+  match run(connection, statement) do
+    (:updated, :undefined) => Ok(0)
+    (:updated, count) => Ok(count)
+    (:selected, _, _) => Ok(0)
+    (:error, reason) => do
+      let text = reasonText(reason)
+      text == NOTHING_CHANGED then Ok(0) else Error("${text} — in: ${statement.statement}")
+    end
+  end
+end
+
+# Runs a SELECT; every row as its cells, in column order, as text. NULL reads
+# as "" — the schema declares every column NOT NULL, so that is never data.
+query : Any -> Statement -> Result<[[String]], String>
+foul query(connection, statement) do
+  match run(connection, statement) do
+    (:selected, _, rows) => Ok(rowsOf(rows))
+    (:updated, _) => Ok([])
+    (:error, reason) => Error("${reasonText(reason)} — in: ${statement.statement}")
+  end
+end
+
+# INSERT one row.
+inserting : Table -> [(String, Value)] -> Statement
+let inserting(table, fields) do
+  let columns = fields.map { |field| match field do (name, _) => name end }
+  let holes = fields.map { |field| match field do (_, value) => hole(value) end }
+  Statement {
+    statement: "INSERT INTO ${table.label} (${columns.join(", ")}) VALUES (${holes.join(", ")})",
+    params: fields.map { |field| match field do (_, value) => bound(value) end }
+  }
+end
+
+# UPDATE the rows matching every condition.
+updating : Table -> [(String, Value)] -> [Cond] -> Statement
+let updating(table, fields, conditions) do
+  let sets = fields.map { |field| match field do (name, value) => "${name} = ${hole(value)}" end }
+  let filter = filtering(conditions)
+  Statement {
+    statement: "UPDATE ${table.label} SET ${sets.join(", ")}${filter.statement}",
+    params: fields.map { |field| match field do (_, value) => bound(value) end } + filter.params
+  }
+end
+
+# DELETE the rows matching every condition.
+deleting : Table -> [Cond] -> Statement
+let deleting(table, conditions) do
+  let filter = filtering(conditions)
+  Statement { statement: "DELETE FROM ${table.label}${filter.statement}", params: filter.params }
+end
+
+# SELECT columns from the rows matching every condition, ordered.
+selecting : Table -> [String] -> [Cond] -> [String] -> Statement
+let selecting(table, columns, conditions, order) do
+  let filter = filtering(conditions)
+  let sorted = order.empty? then "" else " ORDER BY ${order.join(", ")}"
+  Statement {
+    statement: "SELECT ${columns.join(", ")} FROM ${table.label}${filter.statement}${sorted}",
+    params: filter.params
+  }
+end
+
+# A statement with no bound values.
+plain : String -> Statement
+let plain(sql) = Statement { statement: sql }
+
+private do
+  # A WHERE clause from Harmat conditions, or nothing.
+  filtering : [Cond] -> Statement
+  let filtering(conditions) do
+    let clauses = conditions.map { |condition|
+      match condition do
+        EqCond(column, _) => "${column} = ?"
+        NullCond(column) => "${column} IS NULL"
+      end
+    }
+    let values = conditions.flatMap { |condition|
+      match condition do
+        EqCond(_, value) => ["${value}"]
+        NullCond(_) => []
+      end
+    }
+    let clause = clauses.empty? then "" else " WHERE ${clauses.join(" AND ")}"
+    Statement { statement: clause, params: values }
+  end
+
+  hole : Value -> String
+  let hole(Text(_)) = "?"
+  let hole(Whole(_)) = "CAST(? AS BIGINT)"
+
+  bound : Value -> String
+  let bound(Text(text)) = text
+  let bound(Whole(number)) = "${number}"
+
+  # `odbc` wants charlists for SQL and one `{Type, [Value]}` per `?`.
+  foul run(connection: Any, statement: Statement) -> Any do
+    if statement.params.empty?
+      return BEAM.odbc.sql_query(connection, statement.statement.bytes)
+    end
+    let bindings = statement.params.map { |value|
+      let column : [Any] = [value]
+      ((:sql_varchar, 8000), column)
+    }
+    return BEAM.odbc.param_query(connection, statement.statement.bytes, bindings)
+  end
+
+  foul rowsOf(rows: Any) -> [[String]] do
+    let listed : [Any] = rows
+    return listed.map { |row|
+      let cells : [Any] = BEAM.erlang.tuple_to_list(row)
+      cells.map { |cell| cell == :null then "" else "${cell}" }
+    }
+  end
+
+  # A driver reports errors as a charlist; anything else is shown as it is.
+  foul reasonText(reason: Any) -> String do
+    if BEAM.erlang.is_list(reason)
+      return "${BEAM.unicode.characters_to_binary(reason)}"
+    end
+    return "${reason}"
+  end
+end

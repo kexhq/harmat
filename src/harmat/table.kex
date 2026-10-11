@@ -48,7 +48,7 @@ define : Atom -> (TableBuilder -> [Column]) -> Definition
 let define(label, columns) = Definition { label: named(label), columns: columns(TableBuilder { table: named(label) }) }
 
 make Definition do
-  # The table, for `Harmat.Database` statements.
+  # The table, for `Harmat.Odbc` statements.
   table :> Table
   let table = Harmat.Schema.table(@label)
 
