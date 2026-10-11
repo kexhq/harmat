@@ -22,7 +22,7 @@ module Harmat.Db
 using Harmat.Schema, only: [Cond, EqCond, NullCond, TextColumn, IntColumn, Value]
 using Harmat.Database, only: [Statement]
 using Harmat.Table, only: [Definition]
-using Harmat.Migration, only: [Column, Storage, Characters, Flag, named]
+using Harmat.Column, only: [Column, Storage, Characters, Flag, named]
 
 # How statements reach a database: a pair of functions rather than a
 # connection, so that a `Db` can be used from any process (an ODBC connection

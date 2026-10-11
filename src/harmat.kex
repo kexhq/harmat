@@ -10,6 +10,7 @@ module Harmat do
   export Harmat.Schema
   export Harmat.Query
   export Harmat.Database
+  export Harmat.Column
   export Harmat.Migration
   export Harmat.Table
   export Harmat.Db

@@ -1,22 +1,28 @@
-using Harmat.Migration, only: [Migration, migration, createTable, addColumn, removeColumn, addIndex, string, bigint]
-using Harmat.Table, only: [Definition, define]
+using Harmat.Migration, as: Migration
+using Harmat.Migration, only: [createTable, addColumn, removeColumn, addIndex]
+using Harmat.Table, as: Table
+using Harmat.Table, only: [Definition]
 
-let users = define :users do
-  string(:id).primaryKey
-  string(:email)
-  bigint(:credit).withDefault(0)
+let users = Table.define :users do |t|
+  [
+    t.string(:id, primaryKey: true),
+    t.string(:email),
+    t.bigint(:credit, default: 0)
+  ]
 end
 
-let createUsers = migration :create_users do
-  createTable :users do
-    string(:id).primaryKey
-    string(:email)
+let createUsers = Migration.define :create_users do
+  createTable(:users) do |t|
+    [
+      t.string(:id, primaryKey: true),
+      t.string(:email)
+    ]
   end
   addIndex(:users, [:email])
 end
 
-let addCredit = migration :add_credit, follows: :create_users do
-  addColumn(:users, bigint(:credit).withDefault(0))
+let addCredit = Migration.define :add_credit, follows: :create_users do
+  addColumn(:users) do |t| t.bigint(:credit, default: 0) end
 end
 
 describe("Harmat.Table") do
@@ -28,8 +34,8 @@ describe("Harmat.Table") do
   end
 
   it("replays a history into the tables it leaves behind") do
-    let dropEmail = migration :drop_email, follows: :add_credit do
-      removeColumn(:users, string(:email))
+    let dropEmail = Migration.define :drop_email, follows: :add_credit do
+      removeColumn(:users) do |t| t.string(:email) end
     end
     let tables : [Definition] = Harmat.Table.replayed([dropEmail, addCredit, createUsers]).try
     Assert.equal(tables.map { |definition| definition.names }, [["id", "credit"]])
@@ -42,15 +48,17 @@ describe("Harmat.Table") do
   it("says what was declared but never migrated, and the reverse") do
     Assert.equal(Harmat.Table.drift([users], [createUsers]), ["users.credit is declared but no migration adds it"])
     Assert.equal(Harmat.Table.drift([], [createUsers]), ["table users is migrated but not declared"])
-    let accounts = define :accounts do
-      string(:id).primaryKey
+    let accounts = Table.define :accounts do |t|
+      [
+        t.string(:id, primaryKey: true)
+      ]
     end
     Assert.equal(Harmat.Table.drift([users, accounts], [createUsers, addCredit]), ["table accounts is declared but no migration creates it"])
   end
 
   it("notices a column declared differently from how it was migrated") do
-    let generous = migration :add_credit, follows: :create_users do
-      addColumn(:users, bigint(:credit).withDefault(100))
+    let generous = Migration.define :add_credit, follows: :create_users do
+      addColumn(:users) do |t| t.bigint(:credit, default: 100) end
     end
     Assert.equal(Harmat.Table.drift([users], [createUsers, generous]), ["users.credit is declared differently from how it was migrated"])
   end

@@ -1,4 +1,5 @@
-using Harmat.Migration, only: [Migration, migration, createTable, dropTable, addColumn, addIndex, addUniqueIndex, runSql, merge, string, bigint, boolean]
+using Harmat.Migration, as: Migration
+using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, runSql]
 
 # The SQLite ODBC driver this spec runs against; HARMAT_SPEC_DSN names
 # any other database instead.
@@ -6,27 +7,29 @@ foul dsn(file: String) -> String do
   ENV.get("HARMAT_SPEC_DSN").or("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=${file}")
 end
 
-let createUsers = migration :create_users do
-  createTable :users do
-    string(:id).primaryKey
-    string(:email)
-    bigint(:credit).withDefault(0)
-    string(:role).withDefault("member").oneOf(["member", "admin"])
-    boolean(:active).withDefault(true)
-    string(:nickname).nullable
+let createUsers = Migration.define :create_users do
+  createTable(:users) do |t|
+    [
+      t.string(:id, primaryKey: true),
+      t.string(:email),
+      t.bigint(:credit, default: 0),
+      t.string(:role, default: "member", oneOf: ["member", "admin"]),
+      t.boolean(:active, default: true),
+      t.string(:nickname, nullable: true)
+    ]
   end
-  addUniqueIndex(:users, [:email])
+  addIndex(:users, [:email], unique: true)
 end
 
-let addNames = migration :add_names, follows: :create_users do
-  addColumn(:users, string(:name).withDefault("it's"))
+let addNames = Migration.define :add_names, follows: :create_users do
+  addColumn(:users) do |t| t.string(:name, default: "it's") end
 end
 
-let addIndexes = migration :add_indexes, follows: :add_names do
+let addIndexes = Migration.define :add_indexes, follows: :add_names do
   addIndex(:users, [:role, :name])
 end
 
-let names(steps: [Migration]) -> [String] = steps.map { |step| step.name }
+let names(steps: [Harmat.Migration.Migration]) -> [String] = steps.map { |step| step.name }
 
 describe("Harmat.Migration DSL") do
   it("renders a table as standard SQL") do
@@ -49,32 +52,34 @@ describe("Harmat.Migration rollback") do
   end
 
   it("recreates a dropped table when it was told the columns") do
-    let retire = migration :retire_users, follows: :add_indexes do
-      dropTable :users do
-        string(:id).primaryKey
+    let retire = Migration.define :retire_users, follows: :add_indexes do
+      dropTable(:users) do |t|
+        [
+          t.string(:id, primaryKey: true)
+        ]
       end
     end
     Assert.equal(Harmat.Migration.undoing(retire), Ok(["CREATE TABLE users (\n  id TEXT PRIMARY KEY\n)"]))
   end
 
   it("refuses what threw information away") do
-    let forgetful = migration :forget_users, follows: :add_indexes do
+    let forgetful = Migration.define :forget_users, follows: :add_indexes do
       dropTable(:users)
     end
     Assert.truthy(Harmat.Migration.undoing(forgetful).error?)
-    let raw = migration :raw, follows: :add_indexes do
+    let raw = Migration.define :raw, follows: :add_indexes do
       runSql("UPDATE users SET role = 'member'")
     end
     Assert.truthy(Harmat.Migration.undoing(raw).error?)
-    let paired = migration :paired, follows: :add_indexes do
+    let paired = Migration.define :paired, follows: :add_indexes do
       runSql("UPDATE users SET credit = credit + 1", undo: "UPDATE users SET credit = credit - 1")
     end
     Assert.equal(Harmat.Migration.undoing(paired), Ok(["UPDATE users SET credit = credit - 1"]))
   end
 end
 
-let addAvatars = migration :add_avatars, follows: :create_users do
-  addColumn(:users, string(:avatar).withDefault(""))
+let addAvatars = Migration.define :add_avatars, follows: :create_users do
+  addColumn(:users) do |t| t.string(:avatar, default: "") end
 end
 
 describe("Harmat.Migration history") do
@@ -89,8 +94,8 @@ describe("Harmat.Migration history") do
   end
 
   it("is whole again once a merge names both heads") do
-    let joined = merge(:merge_names_and_avatars, [:add_names, :add_avatars])
-    let later = migration :later, follows: :merge_names_and_avatars do
+    let joined = Migration.merge(:merge_names_and_avatars, [:add_names, :add_avatars])
+    let later = Migration.define :later, follows: :merge_names_and_avatars do
       addIndex(:users, [:avatar])
     end
     let history = [later, joined, addAvatars, addNames, createUsers]
@@ -101,13 +106,13 @@ describe("Harmat.Migration history") do
 
   it("refuses a parent that is not in the list, two roots, and repeats") do
     Assert.truthy(Harmat.Migration.ordered([createUsers, addIndexes]).error?)
-    Assert.truthy(Harmat.Migration.ordered([createUsers, Migration { name: "other" }]).error?)
+    Assert.truthy(Harmat.Migration.ordered([createUsers, Harmat.Migration.Migration { name: "other" }]).error?)
     Assert.truthy(Harmat.Migration.ordered([createUsers, createUsers]).error?)
   end
 
   it("refuses a loop") do
-    let first = Migration { name: "a", parents: ["b"] }
-    let second = Migration { name: "b", parents: ["a"] }
+    let first = Harmat.Migration.Migration { name: "a", parents: ["b"] }
+    let second = Harmat.Migration.Migration { name: "b", parents: ["a"] }
     Assert.truthy(Harmat.Migration.ordered([first, second]).error?)
     Assert.truthy(Harmat.Migration.ordered([createUsers, first, second]).error?)
   end
@@ -124,7 +129,7 @@ describe("Harmat.Migration against a database") do
 
     # Another branch added `add_avatars`; the merge joined the two heads. This
     # database already ran `add_names`, so only the newcomers are left.
-    let history = [createUsers, addNames, addAvatars, merge(:merge_names_and_avatars, [:add_names, :add_avatars])]
+    let history = [createUsers, addNames, addAvatars, Migration.merge(:merge_names_and_avatars, [:add_names, :add_avatars])]
     Assert.equal(Harmat.Migration.migrate(connection, history), Ok(["add_avatars", "merge_names_and_avatars"]))
     Assert.equal(Harmat.Migration.recorded(connection).map { |done| done.sort }, Ok(["add_avatars", "add_names", "create_users", "merge_names_and_avatars"]))
 

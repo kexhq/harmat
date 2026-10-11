@@ -2,10 +2,14 @@
 #
 # A table is declared once, with the same column words a migration uses:
 #
-#   let users = define :users do
-#     string(:id).primaryKey
-#     string(:email)
-#     bigint(:credit).withDefault(0)
+#   using Harmat.Table, as: Table
+#
+#   let users = Table.define :users do |t|
+#     [
+#       t.string(:id, primaryKey: true),
+#       t.string(:email),
+#       t.bigint(:credit, default: 0)
+#     ]
 #   end
 #
 # and its columns are then reached as typed handles for queries and writes:
@@ -26,7 +30,8 @@
 module Harmat.Table
 
 using Harmat.Schema, only: [Table, TextColumn, IntColumn]
-using Harmat.Migration, only: [Migration, Column, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, Execute]
+using Harmat.Column, only: [Column, TableBuilder, named]
+using Harmat.Migration, only: [Migration, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, Execute]
 
 # A declared table: its name and its columns, in order.
 record Definition do
@@ -37,10 +42,10 @@ end
 # Declares a table.
 #
 # @param label [Atom] the table's name in the database
-# @param columns [Block<[Column]>] its columns, as in `createTable`
+# @param columns [TableBuilder -> [Column]] its columns, as in `createTable`
 # @return [Definition] the declaration
-define : Atom -> Block<[Column]> -> Definition
-let define(label, columns) = Definition { label: Harmat.Migration.named(label), columns: columns() }
+define : Atom -> (TableBuilder -> [Column]) -> Definition
+let define(label, columns) = Definition { label: named(label), columns: columns(TableBuilder { table: named(label) }) }
 
 make Definition do
   # The table, for `Harmat.Database` statements.
@@ -53,11 +58,11 @@ make Definition do
 
   # A handle on a text column.
   text :> Atom -> TextColumn
-  let text(name) = Harmat.Schema.text(Harmat.Migration.named(name))
+  let text(name) = Harmat.Schema.text(named(name))
 
   # A handle on an integer column.
   whole :> Atom -> IntColumn
-  let whole(name) = Harmat.Schema.integer(Harmat.Migration.named(name))
+  let whole(name) = Harmat.Schema.integer(named(name))
 end
 
 # The tables a migration history produces, by replaying its operations in

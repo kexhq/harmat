@@ -1,20 +1,22 @@
 # Harmat.Migration — schema changes written in Kex, kept as a graph.
 #
-# A migration is a named list of operations, written in a small Rails-like
-# DSL and rendered as standard SQL, the same for every database:
+#   using Harmat.Migration, as: Migration
+#   using Harmat.Migration, only: [createTable, addColumn, addIndex]
 #
-#   let createUsers = migration :create_users do
-#     createTable :users do
-#       string(:id).primaryKey
-#       string(:email)
-#       bigint(:credit).withDefault(0)
-#       string(:role).withDefault("member").oneOf(["member", "admin"])
+#   let change = Migration.define :create_users do
+#     createTable(:users) do |t|
+#       [
+#         t.string(:id, primaryKey: true),
+#         t.string(:email),
+#         t.string(:role, default: "member", oneOf: ["member", "admin"]),
+#         t.bigint(:credit, default: 0)
+#       ]
 #     end
-#     addUniqueIndex(:users, [:email])
+#     addIndex(:users, [:email], unique: true)
 #   end
 #
-#   let addUserNames = migration :add_user_names, follows: :create_users do
-#     addColumn(:users, string(:name).withDefault(""))
+#   let change = Migration.define :add_user_names, follows: :create_users do
+#     addColumn(:users) do |t| t.string(:name, default: "") end
 #   end
 #
 # Order comes from `follows`, never from file names or timestamps: every
@@ -24,7 +26,7 @@
 # instead of the silent interleaving timestamps give. It is reconciled by
 # saying so, in one line, without touching either branch's migration:
 #
-#   let mergeNamesAndAvatars = merge(:merge_names_and_avatars, [:add_user_names, :add_avatars])
+#   let change = Migration.merge(:merge_names_and_avatars, [:add_user_names, :add_avatars])
 #
 # So the history is a directed acyclic graph with exactly one head, and what a
 # database has run is a set of names rather than a version number: a database
@@ -42,22 +44,7 @@
 module Harmat.Migration
 
 using Harmat.Schema, only: [table, Text]
-
-# How a column stores its values.
-type Storage = Characters | Wide | Whole | Flag
-
-# One column of a table being created or extended. NOT NULL unless
-# `.nullable` says otherwise.
-record Column do
-  label : String
-  storage : Storage
-  nullable? : Bool = false
-  key? : Bool = false
-  # The DEFAULT, already an SQL literal.
-  fallback : String? = None
-  # The only values a CHECK lets in; empty means anything.
-  allowed : [String] = []
-end
+using Harmat.Column, only: [Column, Storage, Characters, Wide, Whole, Flag, TableBuilder, named]
 
 # One schema change.
 type Operation = CreateTable(String, [Column])
@@ -79,22 +66,13 @@ end
 # The table that records which migrations a database has run.
 let LEDGER = "schema_migrations"
 
-# Tables, columns, indexes and migrations are named with atoms in the DSL —
-# `createTable :users`, `string(:email)`, `follows: :create_users` — and kept
-# as text from there on.
-named : Atom -> String
-let named(word) do
-  let shown = "${word}"
-  shown.startsWith?(":") then shown.drop(1) else shown
-end
-
 # Declares the first migration of a history.
 #
 # @param name [Atom] unique name, recorded in the ledger
 # @param operations [Block<[Operation]>] the schema changes, in order
 # @return [Migration] the migration
-migration : Atom -> Block<[Operation]> -> Migration
-let migration(name, operations) = Migration { name: named(name), operations: operations() }
+define : Atom -> Block<[Operation]> -> Migration
+let define(name, operations) = Migration { name: named(name), operations: operations() }
 
 # Declares a migration that runs after another.
 #
@@ -102,8 +80,8 @@ let migration(name, operations) = Migration { name: named(name), operations: ope
 # @param follows [Atom] the name of the migration before this one
 # @param operations [Block<[Operation]>] the schema changes, in order
 # @return [Migration] the migration
-migration : Atom -> Atom -> Block<[Operation]> -> Migration
-let migration(name, follows: Atom, operations) = Migration { name: named(name), parents: [named(follows)], operations: operations() }
+define : Atom -> Atom -> Block<[Operation]> -> Migration
+let define(name, follows: Atom, operations) = Migration { name: named(name), parents: [named(follows)], operations: operations() }
 
 # Joins the heads two branches left behind into one. It changes nothing in
 # the database; it only records that both histories are now one.
@@ -116,38 +94,37 @@ let merge(name, heads) = Migration { name: named(name), parents: heads.map { |pa
 
 # --- Operations -------------------------------------------------------------
 
-createTable : Atom -> Block<[Column]> -> Operation
-let createTable(name, columns) = CreateTable(named(name), columns())
+# Creates a table. The block is handed a `TableBuilder` and returns the
+# table's columns.
+createTable : Atom -> (TableBuilder -> [Column]) -> Operation
+let createTable(name, columns) = CreateTable(named(name), columns(TableBuilder { table: named(name) }))
 
 # Drops a table for good: with no columns given, this cannot be rolled back.
 dropTable : Atom -> Operation
 let dropTable(name) = DropTable(named(name), [])
 
 # Drops a table whose columns are stated, so a rollback can create it again.
-dropTable : Atom -> Block<[Column]> -> Operation
-let dropTable(name, columns) = DropTable(named(name), columns())
+dropTable : Atom -> (TableBuilder -> [Column]) -> Operation
+let dropTable(name, columns) = DropTable(named(name), columns(TableBuilder { table: named(name) }))
 
-addColumn : Atom -> Column -> Operation
-let addColumn(name, column) = AddColumn(named(name), column)
+# Adds one column: `addColumn(:users) do |t| t.string(:name, default: "") end`.
+addColumn : Atom -> (TableBuilder -> Column) -> Operation
+let addColumn(name, column) = AddColumn(named(name), column(TableBuilder { table: named(name) }))
 
 # Removes a column. The whole column is given, not just its name, so that a
 # rollback can add it back as it was.
-removeColumn : Atom -> Column -> Operation
-let removeColumn(name, column) = RemoveColumn(named(name), column)
+removeColumn : Atom -> (TableBuilder -> Column) -> Operation
+let removeColumn(name, column) = RemoveColumn(named(name), column(TableBuilder { table: named(name) }))
 
-# An index named `<table>_<columns>_index`.
-addIndex : Atom -> [Atom] -> Operation
-let addIndex(name, columns) = AddIndex(named(name), columns.map { |column| named(column) }, false)
-
-addUniqueIndex : Atom -> [Atom] -> Operation
-let addUniqueIndex(name, columns) = AddIndex(named(name), columns.map { |column| named(column) }, true)
+# An index named `<table>_<columns>_index`; `unique: true` for a unique one.
+let addIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation do
+  AddIndex(named(name), columns.map { |column| named(column) }, unique)
+end
 
 # Drops the index `addIndex` made for these columns.
-removeIndex : Atom -> [Atom] -> Operation
-let removeIndex(name, columns) = RemoveIndex(named(name), columns.map { |column| named(column) }, false)
-
-removeUniqueIndex : Atom -> [Atom] -> Operation
-let removeUniqueIndex(name, columns) = RemoveIndex(named(name), columns.map { |column| named(column) }, true)
+let removeIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation do
+  RemoveIndex(named(name), columns.map { |column| named(column) }, unique)
+end
 
 # SQL the DSL has no word for, run as written. Keep it standard: Harmat does
 # not know which database will run it. Cannot be rolled back.
@@ -158,50 +135,16 @@ let runSql(statement) = Execute(statement, None)
 runSql : String -> String -> Operation
 let runSql(statement, undo: String) = Execute(statement, Just(undo))
 
-# --- Columns ----------------------------------------------------------------
-
-# Text of any length.
-string : Atom -> Column
-let string(label) = Column { label: named(label), storage: Characters }
-
-# A 64-bit integer.
-bigint : Atom -> Column
-let bigint(label) = Column { label: named(label), storage: Wide }
-
-# A 32-bit integer.
-int : Atom -> Column
-let int(label) = Column { label: named(label), storage: Whole }
-
-# True or false.
-boolean : Atom -> Column
-let boolean(label) = Column { label: named(label), storage: Flag }
-
-make Column do
-  primaryKey :> Column
-  let primaryKey = New { key?: true }
-
-  nullable :> Column
-  let nullable = New { nullable?: true }
-
-  # Only these values are accepted, by a CHECK constraint.
-  oneOf :> [String] -> Column
-  let oneOf(values) = New { allowed: values }
-
-  let withDefault(value: String) -> Column = New { fallback: Just(quoted(value)) }
-  let withDefault(value: Integer) -> Column = New { fallback: Just("${value}") }
-  let withDefault(value: Bool) -> Column = New { fallback: Just(value then "TRUE" else "FALSE") }
-end
-
 # --- Rendering --------------------------------------------------------------
 
 # The SQL of one operation.
 sqlOf : Operation -> String
 let sqlOf(CreateTable(name, columns)) do
-  let lines = columns.map { |column| "  ${columnSql(column)}" }
+  let lines = columns.map { |column| "  ${Harmat.Column.columnSql(column)}" }
   "CREATE TABLE ${name} (\n${lines.join(",\n")}\n)"
 end
 let sqlOf(DropTable(name, columns)) = "DROP TABLE ${name}"
-let sqlOf(AddColumn(name, column)) = "ALTER TABLE ${name} ADD COLUMN ${columnSql(column)}"
+let sqlOf(AddColumn(name, column)) = "ALTER TABLE ${name} ADD COLUMN ${Harmat.Column.columnSql(column)}"
 let sqlOf(AddIndex(name, columns, unique?)) do
   let kind = unique? then "UNIQUE INDEX" else "INDEX"
   "CREATE ${kind} ${indexName(name, columns)} ON ${name} (${columns.join(", ")})"
@@ -386,27 +329,6 @@ private do
   indexName : String -> [String] -> String
   let indexName(name, columns) = "${name}_${columns.join("_")}_index"
 
-  quoted : String -> String
-  let quoted(value) = "'${value.replace("'", "''")}'"
-
-  storageSql : Storage -> String
-  let storageSql(Characters) = "TEXT"
-  let storageSql(Wide) = "BIGINT"
-  let storageSql(Whole) = "INTEGER"
-  let storageSql(Flag) = "BOOLEAN"
-
-  columnSql : Column -> String
-  let columnSql(column) do
-    let key = column.key? then ["PRIMARY KEY"] else []
-    let presence = column.nullable? || column.key? then [] else ["NOT NULL"]
-    let fallback = match column.fallback do
-      Just(literal) => ["DEFAULT ${literal}"]
-      None => []
-    end
-    let choices = column.allowed.map { |value| quoted(value) }.join(", ")
-    let check = column.allowed.empty? then [] else ["CHECK (${column.label} IN (${choices}))"]
-    ([column.label, storageSql(column.storage)] + key + presence + fallback + check).join(" ")
-  end
 
   foul applied(connection: Any, pending: [Migration], names: [String]) -> Result<[String], String> do
     match pending do

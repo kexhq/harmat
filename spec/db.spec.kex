@@ -1,12 +1,15 @@
-using Harmat.Migration, only: [string, bigint]
-using Harmat.Table, only: [Definition, define]
+using Harmat.Migration, as: Migration
+using Harmat.Table, as: Table
+using Harmat.Table, only: [Definition]
 using Harmat.Db, only: [Db, Gateway, eq]
 
-let users = define :users do
-  string(:id).primaryKey
-  string(:email)
-  string(:owner)
-  bigint(:credit).withDefault(0)
+let users = Table.define :users do |t|
+  [
+    t.string(:id, primaryKey: true),
+    t.string(:email),
+    t.string(:owner),
+    t.bigint(:credit, default: 0)
+  ]
 end
 
 let id = users.text(:id)
