@@ -282,19 +282,28 @@ foul rollback(connection, steps, count) do
 end
 
 # The names in a database's ledger, creating the ledger when it is missing.
+#
+# Whether it is missing is found by reading it, not with CREATE TABLE IF NOT
+# EXISTS: PostgreSQL answers that with a notice when the table is there, and
+# over ODBC a notice arrives as an error.
 recorded : Any -> Result<[String], String>
 foul recorded(connection) do
-  let ledger = CreateTable(LEDGER, [
-    Column { label: "name", storage: Characters, key?: true },
-    Column { label: "parents", storage: Characters },
-    Column { label: "applied_at", storage: Characters }
-  ])
-  let create = sqlOf(ledger).replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS")
-  match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(create)) do
-    Error(reason) => Error(reason)
-    Ok(_) => Harmat.Odbc.query(connection, Harmat.Odbc.plain("SELECT name FROM ${LEDGER}")).map { |rows|
-      rows.map { |row| row.first.or("") }
-    }
+  let reading = Harmat.Odbc.plain("SELECT name FROM ${LEDGER}")
+  match Harmat.Odbc.query(connection, reading) do
+    Ok(rows) => Ok(rows.map { |row| row.first.or("") })
+    Error(_) => do
+      let ledger = CreateTable(LEDGER, [
+        Column { label: "name", storage: Characters, key?: true },
+        Column { label: "parents", storage: Characters },
+        Column { label: "applied_at", storage: Characters }
+      ])
+      match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(sqlOf(ledger))) do
+        Error(reason) => Error(reason)
+        Ok(_) => Harmat.Odbc.query(connection, reading).map { |rows|
+          rows.map { |row| row.first.or("") }
+        }
+      end
+    end
   end
 end
 
