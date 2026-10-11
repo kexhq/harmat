@@ -1,0 +1,101 @@
+# Whether Harmat builds and its specs pass — on SQLite, and the two that
+# talk to a database on PostgreSQL as well.
+#
+#   test       in the Kex toolchain image: tey install, tey build, tey test,
+#              with SQLite files for the specs that need a database
+#   postgres   the database and migration specs again, against a PostgreSQL
+#              17 beside the job: Harmat says its SQL is the same for both,
+#              and this is where that is held to
+#
+# Set on the repository (Settings → Secrets and variables → Actions):
+#
+#   KEX_IMAGE   variable, optional: the Kex toolchain image, when it is not
+#               ghcr.io/kexhq/kex:rc
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Build and specs
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.KEX_IMAGE || 'ghcr.io/kexhq/kex:rc' }}
+    env:
+      # The SQLite ODBC driver by the name Debian registers it under.
+      HARMAT_SPEC_DRIVER: SQLite3
+    steps:
+      - name: Install git and the SQLite ODBC driver
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates unixodbc libsqliteodbc
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: tey install
+
+      - name: Build
+        run: tey build
+
+      - name: Specs
+        run: tey test
+
+  postgres:
+    name: Specs on PostgreSQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: ${{ vars.KEX_IMAGE || 'ghcr.io/kexhq/kex:rc' }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: harmat
+          POSTGRES_PASSWORD: harmat
+          POSTGRES_DB: harmat_database
+        options: >-
+          --health-cmd "pg_isready -U harmat -d harmat_database"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PGPASSWORD: harmat
+      # Everything of a connection string but the database: each spec gets
+      # one of its own, since each makes the tables it needs.
+      POSTGRES_DSN: Driver={PostgreSQL Unicode};Server=postgres;Port=5432;Uid=harmat;Pwd=harmat
+    steps:
+      - name: Install git, the PostgreSQL ODBC driver and psql
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates unixodbc odbc-postgresql postgresql-client
+
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: tey install
+
+      - name: A second database, for the migration spec
+        run: psql --host postgres --username harmat --dbname harmat_database --command "CREATE DATABASE harmat_migration"
+
+      - name: Database spec
+        env:
+          HARMAT_SPEC_DSN: ${{ env.POSTGRES_DSN }};Database=harmat_database
+        run: tey test spec/database.spec.kex
+
+      - name: Migration spec
+        env:
+          HARMAT_SPEC_DSN: ${{ env.POSTGRES_DSN }};Database=harmat_migration
+        run: tey test spec/migration.spec.kex

@@ -2,10 +2,13 @@ using Harmat.Migration, as: Migration
 using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, execute]
 using Harmat.Sql, only: [sql]
 
-# The SQLite ODBC driver this spec runs against; HARMAT_SPEC_DSN names
-# any other database instead.
+# The database this spec runs against: a SQLite file, through the ODBC
+# driver HARMAT_SPEC_DRIVER names (a path, or a name unixODBC knows, such as
+# SQLite3) or the one Homebrew installs. HARMAT_SPEC_DSN names any other
+# database instead.
 foul dsn(file: String) -> String do
-  ENV.get("HARMAT_SPEC_DSN").or("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=${file}")
+  let driver = ENV.get("HARMAT_SPEC_DRIVER").or("/opt/homebrew/lib/libsqlite3odbc.dylib")
+  ENV.get("HARMAT_SPEC_DSN").or("Driver=${driver};Database=${file}")
 end
 
 let createUsers = Migration.define :create_users do
