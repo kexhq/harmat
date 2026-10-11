@@ -3,10 +3,10 @@
 #
 #   createTable(:users) do |t|
 #     [
-#       t.string(:id, primaryKey: true),
-#       t.string(:email),
-#       t.string(:nickname, default: :null, nullable: true),
-#       t.string(:role, default: "member", oneOf: ["member", "admin"]),
+#       t.text(:id, primaryKey: true),
+#       t.text(:email),
+#       t.text(:nickname, default: :null, nullable: true),
+#       t.text(:role, default: "member", oneOf: ["member", "admin"]),
 #       t.bigint(:credit, default: 0),
 #       t.boolean(:active, default: true)
 #     ]
@@ -49,7 +49,12 @@ end
 
 make TableBuilder do
   # Text of any length.
-  let string(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none, oneOf: [String] = []) -> Column do
+  #
+  # `text`, not `string`: a make-block method named `string` that has
+  # defaulted parameters makes every other `.string` call in the program —
+  # the standard library's own included — compile to a call of the wrong
+  # arity (kexhq/kex#475). Rails has `t.text` too, and TEXT is what this is.
+  let text(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none, oneOf: [String] = []) -> Column do
     Column { label: named(label), storage: Characters, key?: primaryKey, nullable?: nullable, fallback: literal(Characters, default), allowed: oneOf }
   end
 

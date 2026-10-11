@@ -6,9 +6,9 @@
 #   let change = Migration.define :create_users do
 #     createTable(:users) do |t|
 #       [
-#         t.string(:id, primaryKey: true),
-#         t.string(:email),
-#         t.string(:role, default: "member", oneOf: ["member", "admin"]),
+#         t.text(:id, primaryKey: true),
+#         t.text(:email),
+#         t.text(:role, default: "member", oneOf: ["member", "admin"]),
 #         t.bigint(:credit, default: 0)
 #       ]
 #     end
@@ -16,7 +16,7 @@
 #   end
 #
 #   let change = Migration.define :add_user_names, follows: :create_users do
-#     addColumn(:users) do |t| t.string(:name, default: "") end
+#     addColumn(:users) do |t| t.text(:name, default: "") end
 #   end
 #
 # Order comes from `follows`, never from file names or timestamps: every
@@ -107,7 +107,7 @@ let dropTable(name) = DropTable(named(name), [])
 dropTable : Atom -> (TableBuilder -> [Column]) -> Operation
 let dropTable(name, columns) = DropTable(named(name), columns(TableBuilder { table: named(name) }))
 
-# Adds one column: `addColumn(:users) do |t| t.string(:name, default: "") end`.
+# Adds one column: `addColumn(:users) do |t| t.text(:name, default: "") end`.
 addColumn : Atom -> (TableBuilder -> Column) -> Operation
 let addColumn(name, column) = AddColumn(named(name), column(TableBuilder { table: named(name) }))
 

@@ -6,16 +6,16 @@
 #
 #   let users = Table.define :users do |t|
 #     [
-#       t.string(:id, primaryKey: true),
-#       t.string(:email),
+#       t.text(:id, primaryKey: true),
+#       t.text(:email),
 #       t.bigint(:credit, default: 0)
 #     ]
 #   end
 #
 # and its columns are then reached as typed handles for queries and writes:
 #
-#   let email = users.text(:email)      # compares to and stores a String
-#   let credit = users.whole(:credit)   # compares to and stores an Integer
+#   let email = users.textColumn(:email)      # compares to and stores a String
+#   let credit = users.wholeColumn(:credit)   # compares to and stores an Integer
 #
 # The declaration is what the code believes; the migrations are what a
 # database actually gets. `drift` replays the migration history into the
@@ -56,13 +56,15 @@ make Definition do
   names :> [String]
   let names = @columns.map { |column| column.label }
 
-  # A handle on a text column.
-  text :> Atom -> TextColumn
-  let text(name) = Harmat.Schema.text(named(name))
+  # A handle on a text column. (`textColumn`, not `text`: the table builder
+  # has a `text` with defaulted parameters, and two make-block methods of one
+  # name are confused by the compiler when one has defaults — kexhq/kex#475.)
+  textColumn :> Atom -> TextColumn
+  let textColumn(name) = Harmat.Schema.text(named(name))
 
   # A handle on an integer column.
-  whole :> Atom -> IntColumn
-  let whole(name) = Harmat.Schema.integer(named(name))
+  wholeColumn :> Atom -> IntColumn
+  let wholeColumn(name) = Harmat.Schema.integer(named(name))
 end
 
 # The tables a migration history produces, by replaying its operations in
