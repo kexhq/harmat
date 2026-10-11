@@ -65,8 +65,10 @@ main do
   let file = { kind: "write", path: path, content: Harmat.Generators.Migration.source(number, name, heads.first.or("")) }
 
   let listing = FS.File.read(FS.Path.join(root, Harmat.Generators.Migration.LISTING)).or("")
+  # The listing first: it exists, so Tey asks before replacing it, and a "no"
+  # there must leave nothing behind — not a migration file nobody lists.
   let operations = match Harmat.Generators.Migration.listed(listing, number, name) do
-    Just(updated) => [file, { kind: "write", path: Harmat.Generators.Migration.LISTING, content: updated }]
+    Just(updated) => [{ kind: "write", path: Harmat.Generators.Migration.LISTING, content: updated }, file]
     None => [file]
   end
   IO.printLine(JSON.stringify({ version: 1, operations: operations }))
