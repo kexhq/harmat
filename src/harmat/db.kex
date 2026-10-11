@@ -1,23 +1,30 @@
 # Harmat.Db — queries the way Drizzle writes them.
 #
-#   let db = Harmat.Db.over(gateway)
+#   using Harmat.Db, as: Db
 #
-#   db.select().from(users).where(eq(Users.email, email)).all
-#   db.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
-#   db.select().from(messages).orderBy(descending: [:sent_at]).limit(200).all
-#   db.insert(users).values({id: id, email: email}).run
-#   db.update(users).set({email: email}).where(eq(Users.id, id)).run
-#   db.delete(users).where(eq(Users.id, id)).run
+#   Db.select().from(users).where(Users.email.eq(email)).all
+#   Db.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
+#   Db.select().from(messages).orderBy(descending: [:sent_at]).limit(200).all
+#   Db.insert(users).values({id: id, email: email}).run
+#   Db.update(users).set({email: email}).where(Users.id.eq(id)).run
+#   Db.delete(users).where(Users.id.eq(id)).run
 #
 # `users` is a table declared with `Harmat.Table`; `Users.id` is one of its
-# typed column handles, so `eq(Users.id, 42)` on a text column does not
+# typed column handles, so `Users.id.eq(42)` on a text column does not
 # build. A row comes back as a map from column name to text.
 #
-# Nothing is sent until a builder is finished: `all`, `first` or `run`.
+# Nothing is sent until a builder is finished: `all`, `first` or `run`. It
+# is then sent through `Harmat.Connection`, the capability an application
+# installs its database as — so a query names no database, and none is
+# handed around:
 #
-# `db.within(condition)` gives a handle whose every statement carries that
-# condition — reads, updates and deletes alike. A handle confined to one
-# owner cannot touch another's rows, whatever the query built on it says.
+#   with Harmat.Connection = Harmat.Db.Direct { connection: connection } do
+#     Db.select().from(users).all
+#   end
+#
+# `Db.within(condition)` starts statements that all carry that condition —
+# reads, updates and deletes alike. What is confined to one owner cannot
+# touch another's rows, whatever the query built on it says.
 module Harmat.Db
 
 using Harmat.Schema, only: [Cond, EqCond, NullCond, TextColumn, IntColumn, Value]
@@ -25,37 +32,26 @@ using Harmat.Database, only: [Statement]
 using Harmat.Table, only: [Definition]
 using Harmat.Column, only: [Column, Storage, Characters, Flag, named]
 
-# How statements reach a database: a pair of functions rather than a
-# connection, so that a `Db` can be used from any process (an ODBC connection
-# answers only the process that opened it) and so that a spec can hand it a
-# gateway that records statements instead of running them.
-record Gateway do
-  # Runs a statement that changes rows; how many it changed.
-  run : Statement -> Result<Integer, String>
-  # Runs a SELECT; its rows, each as its cells in column order.
-  ask : Statement -> Result<[[String]], String>
+# An open connection as `Harmat.Connection`, for code that runs in the
+# process that owns it. (An ODBC connection answers only the process that
+# opened it: an application serving many processes installs something that
+# asks the owner instead.)
+record Direct do
+  connection : Any
 end
 
-# A gateway straight onto an open connection, for code that runs in the
-# process that owns it.
-direct : Any -> Gateway
-foul direct(connection) = Gateway {
-  run: do |statement| Harmat.Database.execute(connection, statement) end,
-  ask: do |statement| Harmat.Database.query(connection, statement) end
-}
+make Direct, implement: Harmat.Connection do
+  foul run(statement: Harmat.Database.Statement) -> Result<Integer, String> do
+    return Harmat.Database.execute(@connection, statement)
+  end
 
-# A database, as queries see it.
-record Db do
-  gateway : Gateway
-  confines : [Cond] = []
+  foul ask(statement: Harmat.Database.Statement) -> Result<[[String]], String> do
+    return Harmat.Database.query(@connection, statement)
+  end
 end
-
-# The handle queries start from.
-over : Gateway -> Db
-let over(gateway) = Db { gateway: gateway }
 
 record Select do
-  db : Db
+  confines : [Cond] = []
   columns : [String] = []
   source : Definition? = None
   conditions : [Cond] = []
@@ -64,20 +60,19 @@ record Select do
 end
 
 record Insert do
-  db : Db
   target : Definition
   row : {Atom: Any} = {}
 end
 
 record Update do
-  db : Db
+  confines : [Cond] = []
   target : Definition
   changes : {Atom: Any} = {}
   conditions : [Cond] = []
 end
 
 record Delete do
-  db : Db
+  confines : [Cond] = []
   target : Definition
   conditions : [Cond] = []
 end
@@ -91,22 +86,17 @@ let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
 
 # --- Starting a query -------------------------------------------------------
 
-make Db do
-  # A handle whose every statement also carries `condition`.
-  let within(condition: Cond) -> Db = Db { gateway: @gateway, confines: @confines + [condition] }
+# Every column of the table named in `from`, or only the ones listed.
+let select(columns: [Atom] = []) -> Select = Select { columns: columns.map { |column| named(column) } }
 
-  # Every column of the table named in `from`.
-  let select() -> Select = Select { db: this }
+let insert(target: Definition) -> Insert = Insert { target: target }
 
-  # Only these columns.
-  let select(columns: [Atom]) -> Select = Select { db: this, columns: columns.map { |column| named(column) } }
+let update(target: Definition) -> Update = Update { target: target }
 
-  let insert(target: Definition) -> Insert = Insert { db: this, target: target }
+let delete(target: Definition) -> Delete = Delete { target: target }
 
-  let update(target: Definition) -> Update = Update { db: this, target: target }
-
-  let delete(target: Definition) -> Delete = Delete { db: this, target: target }
-end
+# Statements that all also carry `condition`.
+let within(condition: Cond) -> Harmat.Confined.Confined = Harmat.Confined.Confined { confines: [condition] }
 
 make Select do
   let from(source: Definition) -> Select = Select { ...this, source: Just(source) }
@@ -131,7 +121,7 @@ make Select do
       None => Error("select() was not given a table: add .from(table)")
       Just(source) => do
         let columns = @columns.empty? then source.names else @columns
-        let chosen = Harmat.Database.selecting(source.table, columns, @db.confines + @conditions, @order)
+        let chosen = Harmat.Database.selecting(source.table, columns, @confines + @conditions, @order)
         match @cap do
           Just(count) => Ok(Statement { statement: "${chosen.statement} LIMIT ${count}", params: chosen.params })
           None => Ok(chosen)
@@ -145,9 +135,8 @@ make Select do
     match this.statement do
       Error(reason) => return Error(reason)
       Ok(built) => do
-        let ask = @db.gateway.ask
         let names = @columns.empty? then @source.map { |source| source.names }.or([]) else @columns
-        return ask(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
+        return Harmat.Connection.ask(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
       end
     end
   end
@@ -170,10 +159,7 @@ make Insert do
   foul run -> Result<Integer, String> do
     match this.statement do
       Error(reason) => return Error(reason)
-      Ok(built) => do
-        let execute = @db.gateway.run
-        return execute(built)
-      end
+      Ok(built) => return Harmat.Connection.run(built)
     end
   end
 end
@@ -185,17 +171,14 @@ make Update do
   let where(condition: Cond) -> Update = Update { ...this, conditions: @conditions + [condition] }
 
   let statement -> Result<Statement, String> do
-    assigned(@target, @changes).map { |fields| Harmat.Database.updating(@target.table, fields, @db.confines + @conditions) }
+    assigned(@target, @changes).map { |fields| Harmat.Database.updating(@target.table, fields, @confines + @conditions) }
   end
 
   # Runs the update; the number of rows it changed.
   foul run -> Result<Integer, String> do
     match this.statement do
       Error(reason) => return Error(reason)
-      Ok(built) => do
-        let execute = @db.gateway.run
-        return execute(built)
-      end
+      Ok(built) => return Harmat.Connection.run(built)
     end
   end
 end
@@ -203,12 +186,11 @@ end
 make Delete do
   let where(condition: Cond) -> Delete = Delete { ...this, conditions: @conditions + [condition] }
 
-  let statement -> Statement = Harmat.Database.deleting(@target.table, @db.confines + @conditions)
+  let statement -> Statement = Harmat.Database.deleting(@target.table, @confines + @conditions)
 
   # Runs the delete; the number of rows it removed.
   foul run -> Result<Integer, String> do
-    let execute = @db.gateway.run
-    return execute(this.statement)
+    return Harmat.Connection.run(this.statement)
   end
 end
 
