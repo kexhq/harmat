@@ -53,12 +53,8 @@ end
 # Which database a connection opens. Connections from `connect` carry the
 # answer with them; anything else reads as SQLite.
 dialect : Any -> Dialect
-let dialect(connection) do
-  match connection do
-    (_, "postgres") => PostgreSQL
-    _ => SQLite
-  end
-end
+let dialect((_, "postgres")) = PostgreSQL
+let dialect(_) = SQLite
 
 # What `odbc` reports when a bound UPDATE or DELETE matched no row: the driver
 # answers SQL_NO_DATA, which `odbcserver` turns into an error with no
@@ -75,7 +71,7 @@ connect : String -> Result<Any, String>
 foul connect(dsn) do
   BEAM.odbc.start()
   match BEAM.odbc.connect(dsn.bytes, [(:binary_strings, :on), (:auto_commit, :on)]) do
-    (:ok, connection) => Ok((connection, tag(dsn)))
+    (:ok, connection) => Ok((connection, tag(detect(dsn))))
     (:error, :port_program_executable_not_found) => Error("this Erlang has no ODBC port program — build one with Harmat's script/setup-odbc.sh and `sideload` it before connecting")
     (:error, reason) => Error("cannot connect: ${reasonText(reason)}")
   end
@@ -222,11 +218,7 @@ private do
   end
 
   # The dialect tag a connection carries beside its handle, for `dialect`.
-  tag : String -> String
-  let tag(dsn) do
-    match detect(dsn) do
-      SQLite => "sqlite"
-      PostgreSQL => "postgres"
-    end
-  end
+  tag : Dialect -> String
+  let tag(SQLite) = "sqlite"
+  let tag(PostgreSQL) = "postgres"
 end
