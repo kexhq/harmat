@@ -6,12 +6,10 @@ using Harmat.Database, only: [Direct, eq]
 using Harmat.Confined, only: [Confined]
 
 let users = Table.define :users do |t|
-  [
-    t.text(:id, primaryKey: true),
-    t.text(:email),
-    t.text(:owner),
-    t.bigint(:credit, default: 0)
-  ]
+  t.text(:id, primaryKey: true)
+  t.text(:email)
+  t.text(:owner)
+  t.bigint(:credit, default: 0)
 end
 
 let id = users.textColumn(:id)

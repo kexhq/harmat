@@ -1,6 +1,7 @@
 using Harmat.Migration, as: Migration
 using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, execute]
 using Harmat.Sql, only: [sql]
+using Harmat.Odbc, only: [detect, SQLite, PostgreSQL]
 
 # The database this spec runs against: a SQLite file, through the ODBC
 # driver HARMAT_SPEC_DRIVER names (a path, or a name unixODBC knows, such as
@@ -13,14 +14,12 @@ end
 
 let createUsers = Migration.define :create_users do
   createTable(:users) do |t|
-    [
-      t.text(:id, primaryKey: true),
-      t.text(:email),
-      t.bigint(:credit, default: 0),
-      t.text(:role, default: "member", oneOf: ["member", "admin"]),
-      t.boolean(:active, default: true),
-      t.text(:nickname, nullable: true)
-    ]
+    t.text(:id, primaryKey: true)
+    t.text(:email)
+    t.bigint(:credit, default: 0)
+    t.text(:role, default: "member", oneOf: ["member", "admin"])
+    t.boolean(:active, default: true)
+    t.text(:nickname, nullable: true)
   end
   addIndex(:users, [:email], unique: true)
 end
@@ -58,9 +57,7 @@ describe("Harmat.Migration rollback") do
   it("recreates a dropped table when it was told the columns") do
     let retire = Migration.define :retire_users, follows: :add_indexes do
       dropTable(:users) do |t|
-        [
-          t.text(:id, primaryKey: true)
-        ]
+        t.text(:id, primaryKey: true)
       end
     end
     Assert.equal(Harmat.Migration.undoing(retire), Ok(["CREATE TABLE users (\n  id TEXT PRIMARY KEY\n)"]))
@@ -85,6 +82,39 @@ describe("Harmat.Migration rollback") do
     end
     Assert.equal(Harmat.Migration.undoing(paired), Ok(["UPDATE users SET credit = credit - 1"]))
     Assert.equal(Harmat.Migration.statements(paired), ["UPDATE users\nSET credit = credit + 1"])
+  end
+end
+
+describe("Harmat dialects") do
+  it("reads the database from its connection string") do
+    Assert.equal(
+      detect("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=db/development.sqlite3"),
+      SQLite
+    )
+    Assert.equal(detect("Driver=SQLite3;Database=db/test.sqlite3"), SQLite)
+    Assert.equal(
+      detect("Driver={PostgreSQL Unicode};Server=db;Port=5432;Database=app;Uid=app;Pwd=secret"),
+      PostgreSQL
+    )
+    Assert.equal(detect("Driver={SQL Server};Server=db"), SQLite)
+  end
+
+  it("renders a serial primary key per database") do
+    let widgets = Migration.define :create_widgets do
+      createTable(:widgets) do |t|
+        t.serial(:id)
+        t.text(:name)
+      end
+    end
+    Assert.equal(
+      Harmat.Migration.statements(widgets),
+      ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL\n)"]
+    )
+    Assert.equal(
+      Harmat.Migration.statements(widgets, PostgreSQL),
+      ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,\n  name TEXT NOT NULL\n)"]
+    )
+    Assert.equal(Harmat.Migration.undoing(widgets, PostgreSQL), Ok(["DROP TABLE widgets"]))
   end
 end
 
@@ -150,6 +180,28 @@ describe("Harmat.Migration against a database") do
     Assert.equal(Harmat.Migration.rollback(connection, history, 5), Ok(["create_users"]))
     Assert.equal(Harmat.Migration.rollback(connection, history), Ok([]))
     Assert.equal(Harmat.Migration.migrate(connection, history).map { |done| done.count }, Ok(4))
+    FS.File.delete(file)
+  end
+
+  it("assigns serial primary keys on this database") do
+    let file = "harmat_serial_${BEAM.erlang.system_time(:millisecond)}.db"
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
+    let widgets = Migration.define :create_widgets do
+      createTable(:widgets) do |t|
+        t.serial(:id)
+        t.text(:name)
+      end
+    end
+    Assert.equal(Harmat.Migration.migrate(connection, [widgets]), Ok(["create_widgets"]))
+    let table = Harmat.Schema.table("widgets")
+    let sprocket = Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("sprocket"))])
+    let cog = Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("cog"))])
+    Assert.equal(Harmat.Odbc.execute(connection, sprocket), Ok(1))
+    Assert.equal(Harmat.Odbc.execute(connection, cog), Ok(1))
+    let listed = Harmat.Odbc.selecting(table, ["id", "name"], [], [])
+    Assert.equal(Harmat.Odbc.query(connection, listed), Ok([["1", "sprocket"], ["2", "cog"]]))
+    Assert.equal(Harmat.Migration.rollback(connection, [widgets]), Ok(["create_widgets"]))
     FS.File.delete(file)
   end
 end

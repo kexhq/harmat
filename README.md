@@ -40,14 +40,12 @@ A table is declared once, with the words a migration uses for its columns:
 using Harmat.Table, as: Table
 
 let users = Table.define :users do |t|
-  [
-    t.text(:id, primaryKey: true),
-    t.text(:email),
-    t.text(:owner),
-    t.text(:role, default: "member", oneOf: ["member", "admin"]),
-    t.bigint(:credit, default: 0),
-    t.boolean(:active, default: true)
-  ]
+  t.text(:id, primaryKey: true)
+  t.text(:email)
+  t.text(:owner)
+  t.text(:role, default: "member", oneOf: ["member", "admin"])
+  t.bigint(:credit, default: 0)
+  t.boolean(:active, default: true)
 end
 ```
 
@@ -57,9 +55,17 @@ end
 | `t.bigint` | `BIGINT` | `primaryKey:`, `nullable:`, `default:` |
 | `t.int` | `INTEGER` | `primaryKey:`, `nullable:`, `default:` |
 | `t.boolean` | `BOOLEAN` | `nullable:`, `default:` |
+| `t.serial` | `INTEGER …` per database, assigned by it | always the primary key; no `default:` |
 
 A column is `NOT NULL` unless `nullable: true`; `default: :null` is a `NULL`
 default; `oneOf:` becomes a `CHECK`.
+
+A serial column is always the primary key and has no `default:`: the database
+assigns it, so leave it out of `values` and `set` and reach it with
+`wholeColumn` like any integer column. It is the one thing Harmat spells per
+database — `AUTOINCREMENT` on SQLite, `GENERATED ALWAYS AS IDENTITY` on
+PostgreSQL — read off the connection string (an unknown driver gets the
+SQLite spelling); everything else is the same SQL on both.
 
 Columns are reached as typed handles, which is what conditions are asked of:
 
@@ -220,10 +226,8 @@ using Harmat.Migration, only: [createTable, addColumn, addIndex]
 
 let change = Migration.define :create_users do
   createTable(:users) do |t|
-    [
-      t.text(:id, primaryKey: true),
-      t.text(:email)
-    ]
+    t.text(:id, primaryKey: true)
+    t.text(:email)
   end
   addIndex(:users, [:email], unique: true)
 end
@@ -235,8 +239,8 @@ end
 
 | Operation | Undone by |
 | --- | --- |
-| `createTable(:t) do \|t\| [...] end` | dropping it |
-| `dropTable(:t) do \|t\| [...] end` | creating it again, as the block says it was |
+| `createTable(:t) do \|t\| ... end` | dropping it |
+| `dropTable(:t) do \|t\| ... end` | creating it again, as the block says it was |
 | `dropTable(:t)` | nothing: it cannot be rolled back |
 | `addColumn(:t) do \|t\| ... end` | removing the column |
 | `removeColumn(:t) do \|t\| ... end` | adding it back, as the block says it was |
@@ -354,3 +358,9 @@ HARMAT_SPEC_DSN="Driver={PostgreSQL Unicode};Server=localhost;Database=harmat_sp
 Run one spec file per database that way: each makes the tables it needs and
 leaves them. CI (`.github/workflows/ci.yml`) runs everything on SQLite, and
 the database and migration specs on PostgreSQL 17 as well.
+
+## License
+
+Harmat is licensed under the GNU Lesser General Public License, version 3
+or (at your option) any later version (`LGPL-3.0-or-later`).
+See [COPYING.LESSER](COPYING.LESSER) and [COPYING](COPYING) for the license terms.
