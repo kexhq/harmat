@@ -40,14 +40,12 @@ A table is declared once, with the words a migration uses for its columns:
 using Harmat.Table, as: Table
 
 let users = Table.define :users do |t|
-  [
-    t.text(:id, primaryKey: true),
-    t.text(:email),
-    t.text(:owner),
-    t.text(:role, default: "member", oneOf: ["member", "admin"]),
-    t.bigint(:credit, default: 0),
-    t.boolean(:active, default: true)
-  ]
+  t.text(:id, primaryKey: true)
+  t.text(:email)
+  t.text(:owner)
+  t.text(:role, default: "member", oneOf: ["member", "admin"])
+  t.bigint(:credit, default: 0)
+  t.boolean(:active, default: true)
 end
 ```
 
@@ -220,10 +218,8 @@ using Harmat.Migration, only: [createTable, addColumn, addIndex]
 
 let change = Migration.define :create_users do
   createTable(:users) do |t|
-    [
-      t.text(:id, primaryKey: true),
-      t.text(:email)
-    ]
+    t.text(:id, primaryKey: true)
+    t.text(:email)
   end
   addIndex(:users, [:email], unique: true)
 end
@@ -235,8 +231,8 @@ end
 
 | Operation | Undone by |
 | --- | --- |
-| `createTable(:t) do \|t\| [...] end` | dropping it |
-| `dropTable(:t) do \|t\| [...] end` | creating it again, as the block says it was |
+| `createTable(:t) do \|t\| ... end` | dropping it |
+| `dropTable(:t) do \|t\| ... end` | creating it again, as the block says it was |
 | `dropTable(:t)` | nothing: it cannot be rolled back |
 | `addColumn(:t) do \|t\| ... end` | removing the column |
 | `removeColumn(:t) do \|t\| ... end` | adding it back, as the block says it was |

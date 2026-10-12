@@ -4,19 +4,15 @@ using Harmat.Table, as: Table
 using Harmat.Table, only: [Definition]
 
 let users = Table.define :users do |t|
-  [
-    t.text(:id, primaryKey: true),
-    t.text(:email),
-    t.bigint(:credit, default: 0)
-  ]
+  t.text(:id, primaryKey: true)
+  t.text(:email)
+  t.bigint(:credit, default: 0)
 end
 
 let createUsers = Migration.define :create_users do
   createTable(:users) do |t|
-    [
-      t.text(:id, primaryKey: true),
-      t.text(:email)
-    ]
+    t.text(:id, primaryKey: true)
+    t.text(:email)
   end
   addIndex(:users, [:email])
 end
@@ -49,9 +45,7 @@ describe("Harmat.Table") do
     Assert.equal(Harmat.Table.drift([users], [createUsers]), ["users.credit is declared but no migration adds it"])
     Assert.equal(Harmat.Table.drift([], [createUsers]), ["table users is migrated but not declared"])
     let accounts = Table.define :accounts do |t|
-      [
-        t.text(:id, primaryKey: true)
-      ]
+      t.text(:id, primaryKey: true)
     end
     Assert.equal(Harmat.Table.drift([users, accounts], [createUsers, addCredit]), ["table accounts is declared but no migration creates it"])
   end

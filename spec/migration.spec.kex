@@ -13,14 +13,12 @@ end
 
 let createUsers = Migration.define :create_users do
   createTable(:users) do |t|
-    [
-      t.text(:id, primaryKey: true),
-      t.text(:email),
-      t.bigint(:credit, default: 0),
-      t.text(:role, default: "member", oneOf: ["member", "admin"]),
-      t.boolean(:active, default: true),
-      t.text(:nickname, nullable: true)
-    ]
+    t.text(:id, primaryKey: true)
+    t.text(:email)
+    t.bigint(:credit, default: 0)
+    t.text(:role, default: "member", oneOf: ["member", "admin"])
+    t.boolean(:active, default: true)
+    t.text(:nickname, nullable: true)
   end
   addIndex(:users, [:email], unique: true)
 end
@@ -58,9 +56,7 @@ describe("Harmat.Migration rollback") do
   it("recreates a dropped table when it was told the columns") do
     let retire = Migration.define :retire_users, follows: :add_indexes do
       dropTable(:users) do |t|
-        [
-          t.text(:id, primaryKey: true)
-        ]
+        t.text(:id, primaryKey: true)
       end
     end
     Assert.equal(Harmat.Migration.undoing(retire), Ok(["CREATE TABLE users (\n  id TEXT PRIMARY KEY\n)"]))

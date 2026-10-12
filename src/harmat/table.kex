@@ -5,11 +5,9 @@
 #   using Harmat.Table, as: Table
 #
 #   let users = Table.define :users do |t|
-#     [
-#       t.text(:id, primaryKey: true),
-#       t.text(:email),
-#       t.bigint(:credit, default: 0)
-#     ]
+#     t.text(:id, primaryKey: true)
+#     t.text(:email)
+#     t.bigint(:credit, default: 0)
 #   end
 #
 # and its columns are then reached as typed handles for queries and writes:
@@ -42,9 +40,9 @@ end
 # Declares a table.
 #
 # @param label [Atom] the table's name in the database
-# @param columns [TableBuilder -> [Column]] its columns, as in `createTable`
+# @param columns [Block<TableBuilder, [Column]>] its columns, as in `createTable`
 # @return [Definition] the declaration
-define : Atom -> (TableBuilder -> [Column]) -> Definition
+define : Atom -> Block<TableBuilder, [Column]> -> Definition
 let define(label, columns) = Definition { label: named(label), columns: columns(TableBuilder { table: named(label) }) }
 
 make Definition do

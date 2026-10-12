@@ -5,12 +5,10 @@
 #
 #   let change = Migration.define :create_users do
 #     createTable(:users) do |t|
-#       [
-#         t.text(:id, primaryKey: true),
-#         t.text(:email),
-#         t.text(:role, default: "member", oneOf: ["member", "admin"]),
-#         t.bigint(:credit, default: 0)
-#       ]
+#       t.text(:id, primaryKey: true)
+#       t.text(:email)
+#       t.text(:role, default: "member", oneOf: ["member", "admin"])
+#       t.bigint(:credit, default: 0)
 #     end
 #     addIndex(:users, [:email], unique: true)
 #   end
@@ -95,9 +93,9 @@ let merge(name, heads) = Migration { name: named(name), parents: heads.map { |pa
 
 # --- Operations -------------------------------------------------------------
 
-# Creates a table. The block is handed a `TableBuilder` and returns the
+# Creates a table. The block is handed a `TableBuilder` and collects the
 # table's columns.
-createTable : Atom -> (TableBuilder -> [Column]) -> Operation
+createTable : Atom -> Block<TableBuilder, [Column]> -> Operation
 let createTable(name, columns) = CreateTable(named(name), columns(TableBuilder { table: named(name) }))
 
 # Drops a table for good: with no columns given, this cannot be rolled back.
@@ -105,16 +103,16 @@ dropTable : Atom -> Operation
 let dropTable(name) = DropTable(named(name), [])
 
 # Drops a table whose columns are stated, so a rollback can create it again.
-dropTable : Atom -> (TableBuilder -> [Column]) -> Operation
+dropTable : Atom -> Block<TableBuilder, [Column]> -> Operation
 let dropTable(name, columns) = DropTable(named(name), columns(TableBuilder { table: named(name) }))
 
 # Adds one column: `addColumn(:users) do |t| t.text(:name, default: "") end`.
-addColumn : Atom -> (TableBuilder -> Column) -> Operation
+addColumn : Atom -> Block<TableBuilder, Column> -> Operation
 let addColumn(name, column) = AddColumn(named(name), column(TableBuilder { table: named(name) }))
 
 # Removes a column. The whole column is given, not just its name, so that a
 # rollback can add it back as it was.
-removeColumn : Atom -> (TableBuilder -> Column) -> Operation
+removeColumn : Atom -> Block<TableBuilder, Column> -> Operation
 let removeColumn(name, column) = RemoveColumn(named(name), column(TableBuilder { table: named(name) }))
 
 # An index named `<table>_<columns>_index`; `unique: true` for a unique one.

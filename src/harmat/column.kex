@@ -2,21 +2,18 @@
 # declaration writes them.
 #
 #   createTable(:users) do |t|
-#     [
-#       t.text(:id, primaryKey: true),
-#       t.text(:email),
-#       t.text(:nickname, default: :null, nullable: true),
-#       t.text(:role, default: "member", oneOf: ["member", "admin"]),
-#       t.bigint(:credit, default: 0),
-#       t.boolean(:active, default: true)
-#     ]
+#     t.text(:id, primaryKey: true)
+#     t.text(:email)
+#     t.text(:nickname, default: :null, nullable: true)
+#     t.text(:role, default: "member", oneOf: ["member", "admin"])
+#     t.bigint(:credit, default: 0)
+#     t.boolean(:active, default: true)
 #   end
 #
 # `t` is a `TableBuilder`; each of its methods makes one `Column`. A column
 # is NOT NULL unless `nullable: true`. Options may be given in any subset.
 #
-# The block returns its columns as a list: a block that takes a parameter
-# does not collect its lines the way a `Block<[A]>` does (kexhq/kex#469).
+# The block collects its lines into the table's columns.
 module Harmat.Column
 
 # How a column stores its values.
