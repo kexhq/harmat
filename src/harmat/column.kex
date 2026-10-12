@@ -16,8 +16,10 @@
 # The block collects its lines into the table's columns.
 module Harmat.Column
 
+using Harmat.Odbc, only: [Dialect, SQLite, PostgreSQL]
+
 # How a column stores its values.
-type Storage = Characters | Wide | Whole | Flag
+type Storage = Characters | Wide | Whole | Flag | Serial
 
 # One column of a table being created or extended.
 record Column do
@@ -69,11 +71,22 @@ make TableBuilder do
   let boolean(label: Atom, nullable: Bool = false, default: Any = :none) -> Column do
     Column { label: named(label), storage: Flag, nullable?: nullable, fallback: literal(Flag, default) }
   end
+
+  # An auto-incrementing 32-bit integer, always the primary key. Which words
+  # make it so differs by database, so its rendering follows the connection a
+  # migration runs on: `AUTOINCREMENT` on SQLite, `GENERATED ALWAYS AS
+  # IDENTITY` on PostgreSQL. There is no `default:`: the database assigns
+  # the value, so leave a serial out of `values` and `set`.
+  let serial(label: Atom) -> Column do
+    Column { label: named(label), storage: Serial, key?: true }
+  end
 end
 
-# The SQL of a column inside CREATE TABLE or ADD COLUMN.
+# The SQL of a column inside CREATE TABLE or ADD COLUMN: the SQLite spelling.
 columnSql : Column -> String
-let columnSql(column) do
+columnSql : Column -> Dialect -> String
+let columnSql(column) = columnSql(column, SQLite)
+let columnSql(column, dialect) do
   let key = column.key? then ["PRIMARY KEY"] else []
   let presence = column.nullable? || column.key? then [] else ["NOT NULL"]
   let fallback = match column.fallback do
@@ -82,7 +95,12 @@ let columnSql(column) do
   end
   let choices = column.allowed.map { |value| quoted(value) }.join(", ")
   let check = column.allowed.empty? then [] else ["CHECK (${column.label} IN (${choices}))"]
-  ([column.label, storageSql(column.storage)] + key + presence + fallback + check).join(" ")
+  let generated = match (column.storage, dialect) do
+    (Serial, SQLite) => ["AUTOINCREMENT"]
+    (Serial, PostgreSQL) => ["GENERATED ALWAYS AS IDENTITY"]
+    _ => []
+  end
+  ([column.label, storageSql(column.storage)] + key + presence + fallback + check + generated).join(" ")
 end
 
 # A default as SQL: none when it was not given, NULL for `:null`, and
@@ -103,4 +121,5 @@ private do
   let storageSql(Wide) = "BIGINT"
   let storageSql(Whole) = "INTEGER"
   let storageSql(Flag) = "BOOLEAN"
+  let storageSql(Serial) = "INTEGER"
 end

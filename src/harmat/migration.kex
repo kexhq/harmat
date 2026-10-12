@@ -44,6 +44,7 @@ module Harmat.Migration
 using Harmat.Schema, only: [table, Text]
 using Harmat.Column, only: [Column, Storage, Characters, Wide, Whole, Flag, TableBuilder, named]
 using Harmat.Sql, only: [Sql]
+using Harmat.Odbc, only: [Dialect, SQLite, PostgreSQL]
 
 # One schema change.
 type Operation = CreateTable(String, [Column])
@@ -142,21 +143,23 @@ let execute(statement, undo: Sql) = Execute(statement.statement.trim, Just(undo.
 
 # --- Rendering --------------------------------------------------------------
 
-# The SQL of one operation.
+# The SQL of one operation, in the SQLite spelling.
 sqlOf : Operation -> String
-let sqlOf(CreateTable(name, columns)) do
-  let lines = columns.map { |column| "  ${Harmat.Column.columnSql(column)}" }
+sqlOf : Operation -> Dialect -> String
+let sqlOf(operation) = sqlOf(operation, SQLite)
+let sqlOf(CreateTable(name, columns), dialect) do
+  let lines = columns.map { |column| "  ${Harmat.Column.columnSql(column, dialect)}" }
   "CREATE TABLE ${name} (\n${lines.join(",\n")}\n)"
 end
-let sqlOf(DropTable(name, columns)) = "DROP TABLE ${name}"
-let sqlOf(AddColumn(name, column)) = "ALTER TABLE ${name} ADD COLUMN ${Harmat.Column.columnSql(column)}"
-let sqlOf(AddIndex(name, columns, unique?)) do
+let sqlOf(DropTable(name, columns), dialect) = "DROP TABLE ${name}"
+let sqlOf(AddColumn(name, column), dialect) = "ALTER TABLE ${name} ADD COLUMN ${Harmat.Column.columnSql(column, dialect)}"
+let sqlOf(AddIndex(name, columns, unique?), dialect) do
   let kind = unique? then "UNIQUE INDEX" else "INDEX"
   "CREATE ${kind} ${indexName(name, columns)} ON ${name} (${columns.join(", ")})"
 end
-let sqlOf(RemoveColumn(name, column)) = "ALTER TABLE ${name} DROP COLUMN ${column.label}"
-let sqlOf(RemoveIndex(name, columns, unique?)) = "DROP INDEX ${indexName(name, columns)}"
-let sqlOf(Execute(statement, undo)) = statement
+let sqlOf(RemoveColumn(name, column), dialect) = "ALTER TABLE ${name} DROP COLUMN ${column.label}"
+let sqlOf(RemoveIndex(name, columns, unique?), dialect) = "DROP INDEX ${indexName(name, columns)}"
+let sqlOf(Execute(statement, undo), dialect) = statement
 
 # The operation that undoes another, or why there is none.
 reversed : Operation -> Result<Operation, String>
@@ -171,28 +174,35 @@ let reversed(Execute(statement, Just(undo))) = Ok(Execute(undo, Just(statement))
 let reversed(Execute(statement, None)) = Error("execute was given no `undo:` statement for: ${statement}")
 
 # The statements that undo a migration, last operation first — or the first
-# reason one of its operations cannot be undone.
+# reason one of its operations cannot be undone. Without a dialect, the
+# SQLite spelling.
 undoing : Migration -> Result<[String], String>
-let undoing(step) do
+undoing : Migration -> Dialect -> Result<[String], String>
+let undoing(step) = undoing(step, SQLite)
+let undoing(step, dialect) do
   step.operations.reverse.reduce(Ok([])) { |collected, operation|
     match (collected, reversed(operation)) do
       (Error(reason), _) => Error(reason)
       (Ok(_), Error(reason)) => Error("migration \"${step.name}\" cannot be rolled back: ${reason}")
-      (Ok(statements), Ok(opposite)) => Ok(statements + [sqlOf(opposite)])
+      (Ok(statements), Ok(opposite)) => Ok(statements + [sqlOf(opposite, dialect)])
     end
   }
 end
 
-# Every statement of a migration, in order.
+# Every statement of a migration, in order: the SQLite spelling without a dialect.
 statements : Migration -> [String]
-let statements(step) = step.operations.map { |operation| sqlOf(operation) }
+statements : Migration -> Dialect -> [String]
+let statements(step) = statements(step, SQLite)
+let statements(step, dialect) = step.operations.map { |operation| sqlOf(operation, dialect) }
 
 # The migrations whose rollback Harmat cannot work out, with the reason for
 # each. Empty is what a spec should demand, so that an irreversible migration
 # is found when it is written and not halfway through undoing a deploy.
 irreversible : [Migration] -> [String]
-let irreversible(steps) = steps.flatMap { |step|
-  match undoing(step) do
+irreversible : [Migration] -> Dialect -> [String]
+let irreversible(steps) = irreversible(steps, SQLite)
+let irreversible(steps, dialect) = steps.flatMap { |step|
+  match undoing(step, dialect) do
     Ok(_) => []
     Error(reason) => [reason]
   end
@@ -249,7 +259,7 @@ foul migrate(connection, steps) do
     Error(reason) => Error(reason)
     Ok(chain) => match recorded(connection) do
       Error(reason) => Error(reason)
-      Ok(done) => applied(connection, chain.reject { |step| done.contains?(step.name) }, [])
+      Ok(done) => applied(connection, Harmat.Odbc.dialect(connection), chain.reject { |step| done.contains?(step.name) }, [])
     end
   end
 end
@@ -270,7 +280,7 @@ foul rollback(connection, steps, count) do
       Error(reason) => Error(reason)
       Ok(done) => do
         let targets = chain.filter { |step| done.contains?(step.name) }.reverse.take(count)
-        match targets.reduce(Ok([])) { |checked, step| checked.flatMap { |plans| undoing(step).map { |plan| plans + [(step.name, plan)] } } } do
+        match targets.reduce(Ok([])) { |checked, step| checked.flatMap { |plans| undoing(step, Harmat.Odbc.dialect(connection)).map { |plan| plans + [(step.name, plan)] } } } do
           Error(reason) => Error(reason)
           Ok(plans) => undone(connection, plans, [])
         end
@@ -344,18 +354,18 @@ private do
   let indexName(name, columns) = "${name}_${columns.join("_")}_index"
 
 
-  foul applied(connection: Any, pending: [Migration], names: [String]) -> Result<[String], String> do
+  foul applied(connection: Any, dialect: Dialect, pending: [Migration], names: [String]) -> Result<[String], String> do
     match pending do
       [] => Ok(names)
-      [step | rest] => match ran(connection, step) do
-        Ok(_) => applied(connection, rest, names + [step.name])
+      [step | rest] => match ran(connection, dialect, step) do
+        Ok(_) => applied(connection, dialect, rest, names + [step.name])
         Error(reason) => Error("migration \"${step.name}\" failed: ${reason}")
       end
     end
   end
 
-  foul ran(connection: Any, step: Migration) -> Result<Integer, String> do
-    match each(connection, statements(step)) do
+  foul ran(connection: Any, dialect: Dialect, step: Migration) -> Result<Integer, String> do
+    match each(connection, statements(step, dialect)) do
       Error(reason) => Error(reason)
       Ok(_) => Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table(LEDGER), [
         ("name", Text(step.name)),

@@ -3,7 +3,9 @@
 # Harmat does not know which database it is talking to. A connection is an
 # ODBC connection string and nothing else, so an application moves from a
 # SQLite file in development to PostgreSQL in production by handing `connect`
-# a different string — no dialect, no second code path, here or in callers:
+# a different string. One thing renders per database: a serial primary key is
+# `AUTOINCREMENT` on SQLite and `GENERATED ALWAYS AS IDENTITY` on PostgreSQL,
+# read off the connection string below — everything else stays shared SQL:
 #
 #   Harmat.Odbc.connect("Driver=/path/libsqlite3odbc.dylib;Database=db/development.sqlite3")
 #   Harmat.Odbc.connect("Driver={PostgreSQL Unicode};Server=db;Database=app;Uid=app;Pwd=…")
@@ -33,6 +35,31 @@ record Statement do
   params : [String] = []
 end
 
+# The two databases Harmat speaks to. Only serial primary keys render
+# differently; everything else is one shared standard SQL.
+type Dialect = SQLite | PostgreSQL
+
+# Which database a connection string opens: PostgreSQL when its driver says
+# so, SQLite otherwise. A driver Harmat does not know gets the SQLite
+# spelling — the shared SQL runs everywhere, and only `t.serial` branches.
+detect : String -> Dialect
+let detect(dsn) do
+  let driver = dsn.split(";").map { |part| part.trim }.find { |part| part.lowerCase.startsWith?("driver=") }.map { |part| part.drop(7).lowerCase }.or("")
+  return PostgreSQL if driver.contains?("postgres")
+  return SQLite if driver.contains?("sqlite")
+  SQLite
+end
+
+# Which database a connection opens. Connections from `connect` carry the
+# answer with them; anything else reads as SQLite.
+dialect : Any -> Dialect
+let dialect(connection) do
+  match connection do
+    (_, "postgres") => PostgreSQL
+    _ => SQLite
+  end
+end
+
 # What `odbc` reports when a bound UPDATE or DELETE matched no row: the driver
 # answers SQL_NO_DATA, which `odbcserver` turns into an error with no
 # diagnostics rather than `{updated, 0}`.
@@ -48,7 +75,7 @@ connect : String -> Result<Any, String>
 foul connect(dsn) do
   BEAM.odbc.start()
   match BEAM.odbc.connect(dsn.bytes, [(:binary_strings, :on), (:auto_commit, :on)]) do
-    (:ok, connection) => Ok(connection)
+    (:ok, connection) => Ok((connection, tag(dsn)))
     (:error, :port_program_executable_not_found) => Error("this Erlang has no ODBC port program — build one with Harmat's script/setup-odbc.sh and `sideload` it before connecting")
     (:error, reason) => Error("cannot connect: ${reasonText(reason)}")
   end
@@ -164,14 +191,18 @@ private do
 
   # `odbc` wants charlists for SQL and one `{Type, [Value]}` per `?`.
   foul run(connection: Any, statement: Statement) -> Any do
+    let handle = match connection do
+      (held, _) => held
+      _ => connection
+    end
     if statement.params.empty?
-      return BEAM.odbc.sql_query(connection, statement.statement.bytes)
+      return BEAM.odbc.sql_query(handle, statement.statement.bytes)
     end
     let bindings = statement.params.map { |value|
       let column : [Any] = [value]
       ((:sql_varchar, 8000), column)
     }
-    return BEAM.odbc.param_query(connection, statement.statement.bytes, bindings)
+    return BEAM.odbc.param_query(handle, statement.statement.bytes, bindings)
   end
 
   foul rowsOf(rows: Any) -> [[String]] do
@@ -188,5 +219,14 @@ private do
       return "${BEAM.unicode.characters_to_binary(reason)}"
     end
     return "${reason}"
+  end
+
+  # The dialect tag a connection carries beside its handle, for `dialect`.
+  tag : String -> String
+  let tag(dsn) do
+    match detect(dsn) do
+      SQLite => "sqlite"
+      PostgreSQL => "postgres"
+    end
   end
 end

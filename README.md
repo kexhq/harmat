@@ -55,9 +55,17 @@ end
 | `t.bigint` | `BIGINT` | `primaryKey:`, `nullable:`, `default:` |
 | `t.int` | `INTEGER` | `primaryKey:`, `nullable:`, `default:` |
 | `t.boolean` | `BOOLEAN` | `nullable:`, `default:` |
+| `t.serial` | `INTEGER …` per database, assigned by it | always the primary key; no `default:` |
 
 A column is `NOT NULL` unless `nullable: true`; `default: :null` is a `NULL`
 default; `oneOf:` becomes a `CHECK`.
+
+A serial column is always the primary key and has no `default:`: the database
+assigns it, so leave it out of `values` and `set` and reach it with
+`wholeColumn` like any integer column. It is the one thing Harmat spells per
+database — `AUTOINCREMENT` on SQLite, `GENERATED ALWAYS AS IDENTITY` on
+PostgreSQL — read off the connection string (an unknown driver gets the
+SQLite spelling); everything else is the same SQL on both.
 
 Columns are reached as typed handles, which is what conditions are asked of:
 
