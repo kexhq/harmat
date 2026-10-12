@@ -44,7 +44,9 @@ type Dialect = SQLite | PostgreSQL
 # spelling — the shared SQL runs everywhere, and only `t.serial` branches.
 detect : String -> Dialect
 let detect(dsn) do
-  let driver = dsn.split(";").map { |part| part.trim }.find { |part| part.lowerCase.startsWith?("driver=") }.map { |part| part.drop(7).lowerCase }.or("")
+  let parts = dsn.split(";").map { |part| part.trim }
+  let named = parts.find { |part| part.lowerCase.startsWith?("driver=") }
+  let driver = named.map { |part| part.drop(7).lowerCase }.or("")
   return PostgreSQL if driver.contains?("postgres")
   return SQLite if driver.contains?("sqlite")
   SQLite

@@ -95,7 +95,9 @@ let columnSql(column, dialect) do
   end
   let choices = column.allowed.map { |value| quoted(value) }.join(", ")
   let check = column.allowed.empty? then [] else ["CHECK (${column.label} IN (${choices}))"]
-  ([column.label, storageSql(column.storage)] + key + presence + fallback + check + generated(column.storage, dialect)).join(" ")
+  let front = [column.label, storageSql(column.storage)] + key + presence
+  let back = fallback + check + generated(column.storage, dialect)
+  (front + back).join(" ")
 end
 
 # A default as SQL: none when it was not given, NULL for `:null`, and

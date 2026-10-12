@@ -87,9 +87,15 @@ end
 
 describe("Harmat dialects") do
   it("reads the database from its connection string") do
-    Assert.equal(detect("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=db/development.sqlite3"), SQLite)
+    Assert.equal(
+      detect("Driver=/opt/homebrew/lib/libsqlite3odbc.dylib;Database=db/development.sqlite3"),
+      SQLite
+    )
     Assert.equal(detect("Driver=SQLite3;Database=db/test.sqlite3"), SQLite)
-    Assert.equal(detect("Driver={PostgreSQL Unicode};Server=db;Port=5432;Database=app;Uid=app;Pwd=secret"), PostgreSQL)
+    Assert.equal(
+      detect("Driver={PostgreSQL Unicode};Server=db;Port=5432;Database=app;Uid=app;Pwd=secret"),
+      PostgreSQL
+    )
     Assert.equal(detect("Driver={SQL Server};Server=db"), SQLite)
   end
 
@@ -100,8 +106,14 @@ describe("Harmat dialects") do
         t.text(:name)
       end
     end
-    Assert.equal(Harmat.Migration.statements(widgets), ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL\n)"])
-    Assert.equal(Harmat.Migration.statements(widgets, PostgreSQL), ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,\n  name TEXT NOT NULL\n)"])
+    Assert.equal(
+      Harmat.Migration.statements(widgets),
+      ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY AUTOINCREMENT,\n  name TEXT NOT NULL\n)"]
+    )
+    Assert.equal(
+      Harmat.Migration.statements(widgets, PostgreSQL),
+      ["CREATE TABLE widgets (\n  id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,\n  name TEXT NOT NULL\n)"]
+    )
     Assert.equal(Harmat.Migration.undoing(widgets, PostgreSQL), Ok(["DROP TABLE widgets"]))
   end
 end
@@ -183,9 +195,12 @@ describe("Harmat.Migration against a database") do
     end
     Assert.equal(Harmat.Migration.migrate(connection, [widgets]), Ok(["create_widgets"]))
     let table = Harmat.Schema.table("widgets")
-    Assert.equal(Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("sprocket"))])), Ok(1))
-    Assert.equal(Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("cog"))])), Ok(1))
-    Assert.equal(Harmat.Odbc.query(connection, Harmat.Odbc.selecting(table, ["id", "name"], [], [])), Ok([["1", "sprocket"], ["2", "cog"]]))
+    let sprocket = Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("sprocket"))])
+    let cog = Harmat.Odbc.inserting(table, [("name", Harmat.Schema.Text("cog"))])
+    Assert.equal(Harmat.Odbc.execute(connection, sprocket), Ok(1))
+    Assert.equal(Harmat.Odbc.execute(connection, cog), Ok(1))
+    let listed = Harmat.Odbc.selecting(table, ["id", "name"], [], [])
+    Assert.equal(Harmat.Odbc.query(connection, listed), Ok([["1", "sprocket"], ["2", "cog"]]))
     Assert.equal(Harmat.Migration.rollback(connection, [widgets]), Ok(["create_widgets"]))
     FS.File.delete(file)
   end
