@@ -8,7 +8,7 @@
 # the text is still baked. `--collapse-report` shows what went.
 
 module Harmat.Query do
-  using Harmat.Schema, only: [Table, Cond, EqCond, NullCond]
+  using Harmat.Schema, only: [Table, Cond, EqCond, InCond, NullCond]
 
   # The finished product: static text plus bound values.
   #
@@ -86,6 +86,15 @@ module Harmat.Query do
             EqCond(col, val) => do
               sql = sql + "${prefix}${col} = ?"
               params = params + [val]
+              first = false
+            end
+            InCond(col, []) => do
+              sql = sql + "${prefix}1 = 0"
+              first = false
+            end
+            InCond(col, vals) => do
+              sql = sql + "${prefix}${col} IN (${vals.map { |_| "?" }.join(", ")})"
+              params = params + vals
               first = false
             end
             NullCond(col) => do

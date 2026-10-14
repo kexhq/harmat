@@ -35,8 +35,9 @@ module Harmat.Schema do
     label : String
   end
 
-  # One WHERE fragment: an equality with a bound value, or IS NULL.
-  type Cond = EqCond(String, Any) | NullCond(String)
+  # One WHERE fragment: an equality with a bound value, membership in a list
+  # of bound values, or IS NULL.
+  type Cond = EqCond(String, Any) | InCond(String, [Any]) | NullCond(String)
 
   # One value headed for a column in an INSERT or UPDATE.
   type Value = Text(String) | Whole(Integer)
@@ -67,6 +68,9 @@ module Harmat.Schema do
     eq :> Integer -> Cond
     let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
+    isIn :> [Integer] -> Cond
+    let isIn(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+
     storing :> Integer -> (String, Value)
     let storing(val: Integer) -> (String, Harmat.Schema.Value) = (@label, Whole(val))
   end
@@ -77,6 +81,9 @@ module Harmat.Schema do
 
     eq :> String -> Cond
     let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    isIn :> [String] -> Cond
+    let isIn(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     storing :> String -> (String, Value)
     let storing(val: String) -> (String, Harmat.Schema.Value) = (@label, Text(val))
@@ -89,6 +96,9 @@ module Harmat.Schema do
     eq :> Integer -> Cond
     let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
+    isIn :> [Integer] -> Cond
+    let isIn(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)
   end
@@ -99,6 +109,9 @@ module Harmat.Schema do
 
     eq :> String -> Cond
     let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+
+    isIn :> [String] -> Cond
+    let isIn(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)

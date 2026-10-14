@@ -27,7 +27,7 @@
 # touch another's rows, whatever the query built on it says.
 module Harmat.Database
 
-using Harmat.Schema, only: [Cond, EqCond, NullCond, TextColumn, IntColumn, Value]
+using Harmat.Schema, only: [Cond, EqCond, InCond, NullCond, TextColumn, IntColumn, Value]
 using Harmat.Odbc, only: [Statement]
 using Harmat.Table, only: [Definition]
 using Harmat.Column, only: [Column, Storage, Characters, Flag, named]
@@ -83,6 +83,10 @@ end
 # type is checked against the column's.
 let eq(column: TextColumn, value: String) -> Cond = EqCond(column.label, value)
 let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
+
+# The column equals one of the values. An empty list matches no row.
+let isIn(column: TextColumn, values: [String]) -> Cond = InCond(column.label, values)
+let isIn(column: IntColumn, values: [Integer]) -> Cond = InCond(column.label, values)
 
 # --- Starting a query -------------------------------------------------------
 

@@ -21,7 +21,7 @@
 # the failure. `Statement` is the same shape as `Query` for that reason.
 module Harmat.Odbc
 
-using Harmat.Schema, only: [Table, Cond, EqCond, NullCond, Value, Text, Whole]
+using Harmat.Schema, only: [Table, Cond, EqCond, InCond, NullCond, Value, Text, Whole]
 
 # SQL text with one `?` per bound value. Every value travels as text and the
 # statement casts it where the column is not statement: standard SQL, and the one
@@ -166,12 +166,15 @@ private do
     let clauses = conditions.map { |condition|
       match condition do
         EqCond(column, _) => "${column} = ?"
+        InCond(_, []) => "1 = 0"
+        InCond(column, values) => "${column} IN (${values.map { |_| "?" }.join(", ")})"
         NullCond(column) => "${column} IS NULL"
       end
     }
     let values = conditions.flatMap { |condition|
       match condition do
         EqCond(_, value) => ["${value}"]
+        InCond(_, values) => values.map { |value| "${value}" }
         NullCond(_) => []
       end
     }

@@ -91,6 +91,9 @@ Database.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
 # One row, or None.
 Database.select().from(users).where(email.eq(address)).first
 
+# A column among several values; an empty list matches nothing.
+Database.select().from(users).where(email.isIn(addresses)).all
+
 # Several conditions all have to hold.
 Database.select().from(users)
   .where(owner.eq("ada"))
