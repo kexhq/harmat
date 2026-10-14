@@ -66,6 +66,25 @@ describe("Harmat.Database statements") do
     end
   end
 
+  it("compares a column with a value, by number or by text") do
+    with Harmat.Connection = Echoing {} do
+      Assert.equal(Database.select([:id]).from(users).where(credit.gt(5)).where(credit.lte(10)).all,
+                   Error("SELECT id FROM users WHERE credit > CAST(? AS BIGINT) AND credit <= CAST(? AS BIGINT) [5, 10]"))
+      Assert.equal(Database.select([:id]).from(users).where(email.gte("m")).where(email.lt("n")).all,
+                   Error("SELECT id FROM users WHERE email >= ? AND email < ? [m, n]"))
+    end
+  end
+
+  it("counts rows, in all or for each value of a column") do
+    with Harmat.Connection = Echoing {} do
+      Assert.equal(Database.select().from(users).where(credit.gt(0)).orderBy([:id]).limit(3).count,
+                   Error("SELECT COUNT(*) FROM users WHERE credit > CAST(? AS BIGINT) [0]"))
+      Assert.equal(Database.select().from(users).where(eq(owner, "ada")).countBy(:email),
+                   Error("SELECT email, COUNT(*) FROM users WHERE owner = ? GROUP BY email [ada]"))
+      Assert.equal(Database.select().count, Error("select() was not given a table: add .from(table)"))
+    end
+  end
+
   it("orders largest first") do
     with Harmat.Connection = Echoing {} do
       Assert.equal(Database.select([:id]).from(users).orderBy(descending: [:credit, :id]).limit(3).all,
@@ -128,6 +147,13 @@ describe("Harmat.Database against a database") do
       Assert.equal(hers.update(users).set({credit: 5}).where(eq(id, "u1")).run, Ok(1))
       Assert.equal(hers.select([:credit]).from(users).all, Ok([{"credit": "5"}]))
       Assert.equal(Database.delete(users).where(eq(id, "u1")).run, Ok(1))
+
+      Database.insert(users).values({id: "u3", email: "eve@example.com", owner: "bob", credit: 7}).run
+      Assert.equal(Database.select().from(users).count, Ok(2))
+      Assert.equal(Database.select().from(users).where(credit.gt(5)).count, Ok(1))
+      Assert.equal(Database.select().from(users).where(eq(owner, "nobody")).count, Ok(0))
+      Assert.equal(Database.select().from(users).countBy(:owner), Ok({"bob": 2}))
+      Assert.equal(Database.select().from(users).where(credit.lt(5)).countBy(:email), Ok({"bob@example.com": 1}))
     end
     FS.File.delete(file)
   end

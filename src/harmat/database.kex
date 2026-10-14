@@ -149,6 +149,34 @@ make Select do
   foul first -> Result<{String: String}?, String> do
     return this.limit(1).all.map { |rows| rows.first }
   end
+
+  # Runs the query for how many rows match. The columns, order and limit
+  # asked for do not count.
+  foul count -> Result<Integer, String> do
+    match @source do
+      None => return Error("select() was not given a table: add .from(table)")
+      Just(source) => do
+        let built = Harmat.Odbc.counting(source.table, [], @confines + @conditions)
+        return Harmat.Connection.ask(built).map { |rows| whole(rows.first.or([]).first.or("0")) }
+      end
+    end
+  end
+
+  # Runs the query for how many rows match for each value of one column:
+  # `countBy(:owner)` is `{"ada": 2, "bob": 1}`. A value no row has is not
+  # there, rather than 0.
+  foul countBy(column: Atom) -> Result<{String: Integer}, String> do
+    match @source do
+      None => return Error("select() was not given a table: add .from(table)")
+      Just(source) => do
+        let built = Harmat.Odbc.counting(source.table, [named(column)], @confines + @conditions)
+        let counted : Result<[[String]], String> = Harmat.Connection.ask(built)
+        return counted.map { |rows|
+          rows.reduce({}) { |tallies, cells| tallies.put(cells.first.or(""), whole(cells.drop(1).first.or("0"))) }
+        }
+      end
+    end
+  end
 end
 
 make Insert do
@@ -199,6 +227,10 @@ make Delete do
 end
 
 private do
+  # A count as a database gives it back: "3", or "3.0" from some drivers.
+  whole : String -> Integer
+  let whole(text) = text.split(".").first.or("0").to(Integer).or(0)
+
   keyed : [String] -> [String] -> {String: String}
   let keyed(names, cells) do
     names.zip(cells).reduce({}) { |row, pair| match pair do (name, cell) => row.put(name, cell) end }

@@ -31,6 +31,15 @@ describe "Harmat.Query builder" do
     Assert.equal(none.params, [])
   end
 
+  it "renders comparisons with their operator" do
+    let q = select(["name"]).from(table("users")).where([Harmat.Schema.integer("age").gte(18)]).emit()
+    Assert.equal(q.statement, "SELECT name FROM users WHERE age >= ?")
+    Assert.equal(q.params, [18])
+    let named = select(["name"]).from(table("users")).where([text("name").lt("m")]).emit()
+    Assert.equal(named.statement, "SELECT name FROM users WHERE name < ?")
+    Assert.equal(named.params, ["m"])
+  end
+
   it "compares nullable columns with plain values" do
     let q = select(["name"]).from(table("users")).where([optInteger("age").eqTo(30)]).emit()
     Assert.equal(q.statement, "SELECT name FROM users WHERE age = ?")

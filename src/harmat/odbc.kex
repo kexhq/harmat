@@ -21,7 +21,7 @@
 # the failure. `Statement` is the same shape as `Query` for that reason.
 module Harmat.Odbc
 
-using Harmat.Schema, only: [Table, Cond, EqCond, InCond, NullCond, Value, Text, Whole]
+using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, Value, Text, Whole]
 
 # SQL text with one `?` per bound value. Every value travels as text and the
 # statement casts it where the column is not statement: standard SQL, and the one
@@ -155,6 +155,19 @@ let selecting(table, columns, conditions, order) do
   }
 end
 
+# How many rows match, or with `groups`, how many for each of their values:
+# `SELECT owner, COUNT(*) … GROUP BY owner`.
+counting : Table -> [String] -> [Cond] -> Statement
+let counting(table, groups, conditions) do
+  let filter = filtering(conditions)
+  let chosen = groups.empty? then "COUNT(*)" else "${groups.join(", ")}, COUNT(*)"
+  let grouped = groups.empty? then "" else " GROUP BY ${groups.join(", ")}"
+  Statement {
+    statement: "SELECT ${chosen} FROM ${table.label}${filter.statement}${grouped}",
+    params: filter.params
+  }
+end
+
 # A statement with no bound values.
 plain : String -> Statement
 let plain(sql) = Statement { statement: sql }
@@ -168,6 +181,7 @@ private do
         EqCond(column, _) => "${column} = ?"
         InCond(_, []) => "1 = 0"
         InCond(column, values) => "${column} IN (${values.map { |_| "?" }.join(", ")})"
+        CmpCond(column, operator, value) => "${column} ${operator} ${hole(value)}"
         NullCond(column) => "${column} IS NULL"
       end
     }
@@ -175,6 +189,7 @@ private do
       match condition do
         EqCond(_, value) => ["${value}"]
         InCond(_, values) => values.map { |value| "${value}" }
+        CmpCond(_, _, value) => [bound(value)]
         NullCond(_) => []
       end
     }

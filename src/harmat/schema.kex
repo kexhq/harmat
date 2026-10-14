@@ -36,8 +36,9 @@ module Harmat.Schema do
   end
 
   # One WHERE fragment: an equality with a bound value, membership in a list
-  # of bound values, or IS NULL.
-  type Cond = EqCond(String, Any) | InCond(String, [Any]) | NullCond(String)
+  # of bound values, an ordering against one — `>`, `>=`, `<` or `<=` — or
+  # IS NULL.
+  type Cond = EqCond(String, Any) | InCond(String, [Any]) | CmpCond(String, String, Value) | NullCond(String)
 
   # One value headed for a column in an INSERT or UPDATE.
   type Value = Text(String) | Whole(Integer)
@@ -71,6 +72,20 @@ module Harmat.Schema do
     in :> [Integer] -> Cond
     let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
+    # Larger than, at least, smaller than, at most: by number for a number
+    # column, and by the text's own order for a text one.
+    gt :> Integer -> Cond
+    let gt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
+
+    gte :> Integer -> Cond
+    let gte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+
+    lt :> Integer -> Cond
+    let lt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
+
+    lte :> Integer -> Cond
+    let lte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
+
     storing :> Integer -> (String, Value)
     let storing(val: Integer) -> (String, Harmat.Schema.Value) = (@label, Whole(val))
   end
@@ -84,6 +99,20 @@ module Harmat.Schema do
 
     in :> [String] -> Cond
     let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+
+    # Larger than, at least, smaller than, at most: by number for a number
+    # column, and by the text's own order for a text one.
+    gt :> String -> Cond
+    let gt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
+
+    gte :> String -> Cond
+    let gte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+
+    lt :> String -> Cond
+    let lt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
+
+    lte :> String -> Cond
+    let lte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
 
     storing :> String -> (String, Value)
     let storing(val: String) -> (String, Harmat.Schema.Value) = (@label, Text(val))
@@ -99,6 +128,20 @@ module Harmat.Schema do
     in :> [Integer] -> Cond
     let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
+    # Larger than, at least, smaller than, at most: by number for a number
+    # column, and by the text's own order for a text one.
+    gt :> Integer -> Cond
+    let gt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
+
+    gte :> Integer -> Cond
+    let gte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+
+    lt :> Integer -> Cond
+    let lt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
+
+    lte :> Integer -> Cond
+    let lte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
+
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)
   end
@@ -112,6 +155,20 @@ module Harmat.Schema do
 
     in :> [String] -> Cond
     let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+
+    # Larger than, at least, smaller than, at most: by number for a number
+    # column, and by the text's own order for a text one.
+    gt :> String -> Cond
+    let gt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
+
+    gte :> String -> Cond
+    let gte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+
+    lt :> String -> Cond
+    let lt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
+
+    lte :> String -> Cond
+    let lte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)

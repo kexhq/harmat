@@ -91,6 +91,13 @@ Database.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
 # One row, or None.
 Database.select().from(users).where(email.eq(address)).first
 
+# Larger or smaller: gt, gte, lt and lte, by number or by text.
+Database.select().from(users).where(credit.gte(5)).all
+
+# How many: in all, or for each value of a column.
+Database.select().from(users).where(owner.eq("ada")).count      # Ok(2)
+Database.select().from(users).countBy(:owner)                  # Ok({"ada": 2, "bob": 1})
+
 # A column among several values; an empty list matches nothing.
 Database.select().from(users).where(email.in(addresses)).all
 
