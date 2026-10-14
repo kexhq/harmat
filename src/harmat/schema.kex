@@ -68,8 +68,8 @@ module Harmat.Schema do
     eq :> Integer -> Cond
     let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    isIn :> [Integer] -> Cond
-    let isIn(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    in :> [Integer] -> Cond
+    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     storing :> Integer -> (String, Value)
     let storing(val: Integer) -> (String, Harmat.Schema.Value) = (@label, Whole(val))
@@ -82,8 +82,8 @@ module Harmat.Schema do
     eq :> String -> Cond
     let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    isIn :> [String] -> Cond
-    let isIn(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    in :> [String] -> Cond
+    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     storing :> String -> (String, Value)
     let storing(val: String) -> (String, Harmat.Schema.Value) = (@label, Text(val))
@@ -96,8 +96,8 @@ module Harmat.Schema do
     eq :> Integer -> Cond
     let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    isIn :> [Integer] -> Cond
-    let isIn(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    in :> [Integer] -> Cond
+    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)
@@ -110,8 +110,8 @@ module Harmat.Schema do
     eq :> String -> Cond
     let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    isIn :> [String] -> Cond
-    let isIn(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    in :> [String] -> Cond
+    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)

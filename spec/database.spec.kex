@@ -58,11 +58,11 @@ describe("Harmat.Database statements") do
 
   it("asks for a column among several values") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Database.select([:id]).from(users).where(email.isIn(["a@b.co", "c@d.co"])).where(credit.eq(5)).all,
+      Assert.equal(Database.select([:id]).from(users).where(email.in(["a@b.co", "c@d.co"])).where(credit.eq(5)).all,
                    Error("SELECT id FROM users WHERE email IN (?, ?) AND credit = ? [a@b.co, c@d.co, 5]"))
-      Assert.equal(Database.select([:id]).from(users).where(credit.isIn([1, 2, 3])).all,
+      Assert.equal(Database.select([:id]).from(users).where(credit.in([1, 2, 3])).all,
                    Error("SELECT id FROM users WHERE credit IN (?, ?, ?) [1, 2, 3]"))
-      Assert.equal(Database.delete(users).where(id.isIn([])).run, Error("DELETE FROM users WHERE 1 = 0 []"))
+      Assert.equal(Database.delete(users).where(id.in([])).run, Error("DELETE FROM users WHERE 1 = 0 []"))
     end
   end
 

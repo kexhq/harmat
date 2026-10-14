@@ -92,7 +92,7 @@ Database.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
 Database.select().from(users).where(email.eq(address)).first
 
 # A column among several values; an empty list matches nothing.
-Database.select().from(users).where(email.isIn(addresses)).all
+Database.select().from(users).where(email.in(addresses)).all
 
 # Several conditions all have to hold.
 Database.select().from(users)

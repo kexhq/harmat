@@ -23,10 +23,10 @@ describe "Harmat.Query builder" do
   end
 
   it "renders IN with one param per value, and an empty list as false" do
-    let q = select(["name"]).from(table("users")).where([text("email").isIn(["a@b.co", "c@d.co"])]).emit()
+    let q = select(["name"]).from(table("users")).where([text("email").in(["a@b.co", "c@d.co"])]).emit()
     Assert.equal(q.statement, "SELECT name FROM users WHERE email IN (?, ?)")
     Assert.equal(q.params, ["a@b.co", "c@d.co"])
-    let none = select(["name"]).from(table("users")).where([Harmat.Schema.integer("id").isIn([])]).emit()
+    let none = select(["name"]).from(table("users")).where([Harmat.Schema.integer("id").in([])]).emit()
     Assert.equal(none.statement, "SELECT name FROM users WHERE 1 = 0")
     Assert.equal(none.params, [])
   end

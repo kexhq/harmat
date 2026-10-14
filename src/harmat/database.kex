@@ -85,8 +85,8 @@ let eq(column: TextColumn, value: String) -> Cond = EqCond(column.label, value)
 let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
 
 # The column equals one of the values. An empty list matches no row.
-let isIn(column: TextColumn, values: [String]) -> Cond = InCond(column.label, values)
-let isIn(column: IntColumn, values: [Integer]) -> Cond = InCond(column.label, values)
+let in(column: TextColumn, values: [String]) -> Cond = InCond(column.label, values)
+let in(column: IntColumn, values: [Integer]) -> Cond = InCond(column.label, values)
 
 # --- Starting a query -------------------------------------------------------
 
