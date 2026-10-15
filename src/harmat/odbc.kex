@@ -67,12 +67,16 @@ let NOTHING_CHANGED = "No SQL-driver information available."
 # answers the process that connected, so a `serving` process that keeps a
 # connection has to open it from one of its own slots.
 #
+# The driver does not commit by itself: `execute` and `query` each commit
+# their own statement, and `executing`, `querying` and `finish` are how a
+# transaction (`Harmat.Database.transaction`) keeps several together.
+#
 # @param dsn [String] an ODBC connection string
 # @return [Result<Any, String>] the connection, or why there is none
 connect : String -> Result<Any, String>
 foul connect(dsn) do
   BEAM.odbc.start()
-  match BEAM.odbc.connect(dsn.bytes, [(:binary_strings, :on), (:auto_commit, :on)]) do
+  match BEAM.odbc.connect(dsn.bytes, [(:binary_strings, :on), (:auto_commit, :off)]) do
     (:ok, connection) => Ok((connection, tag(detect(dsn))))
     (:error, :port_program_executable_not_found) => Error("this Erlang has no ODBC port program — build one with Harmat's script/setup-odbc.sh and `sideload` it before connecting")
     (:error, reason) => Error("cannot connect: ${reasonText(reason)}")
@@ -90,9 +94,39 @@ foul sideload(directory) do
   }
 end
 
-# Runs a statement that changes rows; the count of rows it changed.
+# Runs a statement that changes rows, as a transaction of its own: kept if
+# it worked, undone if not. The count of rows it changed.
 execute : Any -> Statement -> Result<Integer, String>
 foul execute(connection, statement) do
+  let changed = executing(connection, statement)
+  match finish(connection, changed.ok?) do
+    Error(reason) => return changed.ok? then Error(reason) else changed
+    Ok(_) => return changed
+  end
+end
+
+# Runs a SELECT as a transaction of its own; every row as its cells, in
+# column order, as text.
+query : Any -> Statement -> Result<[[String]], String>
+foul query(connection, statement) do
+  let rows = querying(connection, statement)
+  finish(connection, rows.ok?)
+  return rows
+end
+
+# Ends the transaction a connection is in: keeps what it did, or undoes it.
+finish : Any -> Bool -> Result<Void, String>
+foul finish(connection, keep) do
+  match BEAM.odbc.commit(handle(connection), keep then :commit else :rollback) do
+    :ok => Ok(())
+    (:error, reason) => Error("cannot ${keep then "commit" else "roll back"}: ${reasonText(reason)}")
+  end
+end
+
+# Runs a statement that changes rows inside the transaction the connection
+# is in, leaving it open; the count of rows it changed.
+executing : Any -> Statement -> Result<Integer, String>
+foul executing(connection, statement) do
   match run(connection, statement) do
     (:updated, :undefined) => Ok(0)
     (:updated, count) => Ok(count)
@@ -104,10 +138,11 @@ foul execute(connection, statement) do
   end
 end
 
-# Runs a SELECT; every row as its cells, in column order, as text. NULL reads
-# as "" — the schema declares every column NOT NULL, so that is never data.
-query : Any -> Statement -> Result<[[String]], String>
-foul query(connection, statement) do
+# Runs a SELECT inside the transaction the connection is in; every row as
+# its cells, in column order, as text. NULL reads as "" — the schema
+# declares every column NOT NULL, so that is never data.
+querying : Any -> Statement -> Result<[[String]], String>
+foul querying(connection, statement) do
   match run(connection, statement) do
     (:selected, _, rows) => Ok(rowsOf(rows))
     (:updated, _) => Ok([])
@@ -206,19 +241,22 @@ private do
   let bound(Whole(number)) = "${number}"
 
   # `odbc` wants charlists for SQL and one `{Type, [Value]}` per `?`.
+  # The driver's own reference, out of what `connect` gave.
+  let handle(connection: Any) -> Any = match connection do
+    (held, _) => held
+    _ => connection
+  end
+
   foul run(connection: Any, statement: Statement) -> Any do
-    let handle = match connection do
-      (held, _) => held
-      _ => connection
-    end
+    let held = handle(connection)
     if statement.params.empty?
-      return BEAM.odbc.sql_query(handle, statement.statement.bytes)
+      return BEAM.odbc.sql_query(held, statement.statement.bytes)
     end
     let bindings = statement.params.map { |value|
       let column : [Any] = [value]
       ((:sql_varchar, 8000), column)
     }
-    return BEAM.odbc.param_query(handle, statement.statement.bytes, bindings)
+    return BEAM.odbc.param_query(held, statement.statement.bytes, bindings)
   end
 
   foul rowsOf(rows: Any) -> [[String]] do

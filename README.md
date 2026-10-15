@@ -114,6 +114,23 @@ Database.update(users).set({credit: 6}).where(email.eq(address)).run
 Database.delete(users).where(email.eq(address)).run
 ```
 
+Every statement `Database` runs is timed and told to `Harmat.Logger`, a
+capability that tells nobody unless a program installs one. Installing
+`Harmat.Log.Console` prints each, as Rails does in development: the table,
+how long it took, the SQL highlighted by kind, the values (anything that
+looks like a password hash or a token's digest as `[FILTERED]`) and what
+came of it.
+
+```kex
+with Harmat.Logger = Harmat.Log.Console { shown?: development } do
+  site.start(host, port)
+end
+```
+
+```
+  users (0.4ms)  SELECT id, email FROM users WHERE email = ?  ["ada@example.com"]  1 row
+```
+
 | Finished with | Answers |
 | --- | --- |
 | `all` | `Result<[{String: String}], String>` |
@@ -212,6 +229,10 @@ make StoreConnection, implement: Harmat.Connection do
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
     …   # SELECT: the rows, each as its cells in column order
   end
+
+  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+    …   # the owner runs `work` as one transaction (see Transactions)
+  end
 end
 ```
 
@@ -225,6 +246,36 @@ Three things follow from it being a capability:
 - A spec installs a record that notes statements instead of running them. A
   stand-in needs at least one field: a record with none cannot be asked a
   method.
+
+### Transactions
+
+`Database.transaction` runs a block as one transaction: what it does is
+kept when it answers `Ok`, and undone when it answers `Error` — so a `.try`
+that fails part-way undoes everything before it. Begun inside another, it
+joins that one.
+
+```kex
+let made : Result<Organization, String> = Database.transaction do
+  let organization = Organizations.chartered(name, slug, owner).try
+  Memberships.enlisted(organization.id, owner).try
+  Ok(organization)
+end
+```
+
+Every statement outside a transaction is one of its own: the connection is
+opened without autocommit, and `execute` and `query` commit each. Inside
+one, `Direct` leaves the connection open between statements and commits or
+rolls back at the end; the logger shows `BEGIN`, and `COMMIT` or
+`ROLLBACK` with the time the whole transaction took.
+
+A transaction belongs to the process running it, not to a capability: a
+block uses the `Harmat.Connection` in force where it was *written*, so its
+statements cannot be redirected by installing another connection around
+it. A connection that asks an owning process — like `StoreConnection`
+above — implements `atomically` by sending the owner the whole block, which
+runs it with `Direct { connection }.atomically(work)`; inside, its own `run`
+and `ask` see `Harmat.Database.ongoing()` and run on that connection
+directly instead of asking the owner, which is busy with the transaction.
 
 ## Migrations
 
@@ -320,11 +371,13 @@ rewritten.)
 
 ## What it does not do
 
-- A condition is an equality, `column.eq(value)`. There is no `<`, `LIKE`,
-  `IN` or `OR` in the builder, and no joins: reach for `sql`.
+- A condition is `eq`, `in`, `gt`/`gte`/`lt`/`lte` or `isNull`. There is no
+  `LIKE` or `OR` in the builder, and no joins: reach for `sql`.
 - Rows come back as maps of text, not as records. Turning one into a record
-  is the caller's. A `NULL` reads as `""`.
-- There are no transactions.
+  is the caller's (kexhq/kex#487). A `NULL` reads as `""`.
+- No savepoints: a transaction begun inside another joins it, and undoing
+  the inner one undoes both.
+- Migrations are not run in a transaction: each statement commits.
 - `Harmat.Query`, a builder whose chains are evaluated while the program is
   compiled, cannot be used from another package yet
   ([kexhq/kex#444](https://github.com/kexhq/kex/issues/444)). It is why the
@@ -336,12 +389,13 @@ rewritten.)
 | --- | --- |
 | `Harmat.Database` | the query builder: `select`, `insert`, `update`, `delete`, `within` |
 | `Harmat.Confined` | what `within` gives: statements that all carry a condition |
-| `Harmat.Connection` | the capability every statement is sent through |
+| `Harmat.Connection` | the capability every statement is sent through; `atomically` for transactions |
+| `Harmat.Logger`, `Harmat.Log` | told of every statement, timed; `Log.Console` prints them |
 | `Harmat.Table`, `Harmat.Column` | declaring tables and columns; `drift` |
 | `Harmat.Schema` | column handles and conditions |
 | `Harmat.Migration` | migrations: the DSL, the history, `migrate` and `rollback` |
 | `Harmat.Sql` | the `sql` tagged literal |
-| `Harmat.Odbc` | the ODBC boundary: `connect`, `sideload`, `execute`, `query` |
+| `Harmat.Odbc` | the ODBC boundary: `connect`, `sideload`, `execute`, `query`; `executing`, `querying` and `finish` inside a transaction |
 | `Harmat.Query` | the compile-time builder (see above) |
 
 ## Developing

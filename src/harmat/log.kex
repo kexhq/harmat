@@ -1,0 +1,95 @@
+# Harmat.Log — loggers for `Harmat.Logger` (src/harmat/logger.kex): the
+# console one, as Rails prints queries in development.
+module Harmat.Log do
+  using Harmat.Odbc, only: [Statement]
+
+  # Prints each statement to standard output while `shown?`: a program
+  # decides that where it starts, from its environment, say. Its colors are
+  # Kex's `Console` colors, which are off by themselves when the output is
+  # not a terminal, with NO_COLOR, or with --no-colors.
+  record Console do
+    shown? : Bool = true
+  end
+
+  make Console, implement: Harmat.Logger do
+    foul queried(statement: Statement, micros: Integer, outcome: String) -> Void do
+      IO.printLine(Harmat.Log.line(statement, micros, outcome, true)) if @shown?
+    end
+  end
+
+  # One statement as Console prints it; plain when `colored?` is false.
+  line : Statement -> Integer -> String -> Bool -> String
+  let line(statement, micros, outcome, colored?) do
+    let paint = { |text, style| colored? then Console.colorize(text, style) else text }
+    let verb = statement.statement.split(" ").first.or("").upperCase
+    let shade = Console.BOLD + SHADES.get(verb).or(Console.MAGENTA)
+    let about = "${subjectOf(statement.statement)} (${elapsed(micros)})"
+    let named = paint(about, Console.BOLD + Console.CYAN)
+    let sql = statement.statement
+      .split(" ")
+      .map { |word| keyword?(word) then paint(word, shade) else word }
+      .join(" ")
+    let values = statement.params.empty? then "" else "  ${paint(valuesOf(statement.params), Console.DIM)}"
+    "  ${named}  ${sql}${values}  ${paint(outcome, Console.DIM)}"
+  end
+
+  private do
+    # Each kind of statement in its own color, as Rails does: reads blue,
+    # inserts green, updates yellow, deletes red.
+    let SHADES = {
+      "SELECT": Console.BLUE,
+      "INSERT": Console.GREEN,
+      "UPDATE": Console.YELLOW,
+      "DELETE": Console.RED,
+      "BEGIN": Console.CYAN,
+      "COMMIT": Console.CYAN,
+      "ROLLBACK": Console.RED
+    }
+
+    let KEYWORDS = [
+      "SELECT", "FROM", "WHERE", "AND", "OR", "NOT", "IN", "IS", "NULL",
+      "ORDER", "BY", "GROUP", "LIMIT", "DESC", "ASC", "INSERT", "INTO",
+      "VALUES", "UPDATE", "SET", "DELETE", "COUNT", "CAST", "AS", "BIGINT",
+      "BEGIN", "COMMIT", "ROLLBACK"
+    ]
+
+    # Whether a word of a statement is SQL's own, not one of the program's:
+    # `COUNT(*)` and `CAST(?` count by what comes before the bracket.
+    keyword? : String -> Bool
+    let keyword?(word) = KEYWORDS.contains?(word.split("(").first.or(""))
+
+    # The table a statement is about: what follows FROM, INTO or UPDATE.
+    subjectOf : String -> String
+    # BEGIN, COMMIT and ROLLBACK are about the transaction, not a table.
+    let subjectOf(sql) do
+      let words = sql.split(" ")
+      return "TRANSACTION" if ["BEGIN", "COMMIT", "ROLLBACK"].contains?(words.first.or(""))
+      tableIn(words)
+    end
+
+    tableIn : [String] -> String
+    let tableIn([]) = "SQL"
+    let tableIn([word | rest]) do
+      return rest.first.or("SQL") if ["FROM", "INTO", "UPDATE"].contains?(word)
+      tableIn(rest)
+    end
+
+    # Microseconds as milliseconds to a tenth: "0.4ms", "12.0ms".
+    elapsed : Integer -> String
+    let elapsed(micros) = "${micros / 1000}.${micros % 1000 / 100}ms"
+
+    # The values a statement was run with, a secret shown as [FILTERED].
+    valuesOf : [String] -> String
+    let valuesOf(params) do
+      let quoted = params.map { |value| secret?(value) then "[FILTERED]" else "\"${value.take(120)}\"" }
+      "[${quoted.join(", ")}]"
+    end
+
+    # A password hash (`pbkdf2-…$…`) or a SHA-256 digest in hex.
+    secret? : String -> Bool
+    let secret?(value) do
+      let hex = value.count == 64 && value.chars.all? { |char| char.digit? || "abcdef".contains?("${char}") }
+      hex || value.startsWith?("pbkdf2-")
+    end
+  end
+end

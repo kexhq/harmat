@@ -42,12 +42,51 @@ end
 
 make Direct, implement: Harmat.Connection do
   foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
+    return Harmat.Odbc.executing(@connection, statement) if Harmat.Database.ongoing().set?
     return Harmat.Odbc.execute(@connection, statement)
   end
 
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
+    return Harmat.Odbc.querying(@connection, statement) if Harmat.Database.ongoing().set?
     return Harmat.Odbc.query(@connection, statement)
   end
+
+  # Runs `work` with this connection left open between its statements,
+  # then keeps all of it or none. A transaction begun inside one joins it.
+  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+    return work() if Harmat.Database.ongoing().set?
+
+    Harmat.Database.begun(@connection)
+    let outcome = work()
+    Harmat.Database.ended()
+    match Harmat.Odbc.finish(@connection, outcome.ok?) do
+      Error(reason) => return outcome.ok? then Error(reason) else outcome
+      Ok(_) => return outcome
+    end
+  end
+end
+
+# The connection this process is in a transaction on, if it is in one.
+#
+# A transaction is the process's, not a capability's: a block uses the
+# `Harmat.Connection` in force where it was written, so the statements of
+# `work` cannot be pointed at another connection by installing one around
+# it. Whatever runs them asks this instead, and leaves the transaction open.
+ongoing : Any?
+foul ongoing do
+  let held : Any = BEAM.erlang.get(:harmat_transaction)
+  return held == :undefined then None else Just(held)
+end
+
+# Marks this process as in a transaction on `connection`, and as out of it.
+begun : Any -> Void
+foul begun(connection) do
+  BEAM.erlang.put(:harmat_transaction, connection)
+end
+
+ended : Void
+foul ended do
+  BEAM.erlang.erase(:harmat_transaction)
 end
 
 record Select do
@@ -87,6 +126,27 @@ let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
 # The column equals one of the values. An empty list matches no row.
 let in(column: TextColumn, values: [String]) -> Cond = InCond(column.label, values)
 let in(column: IntColumn, values: [Integer]) -> Cond = InCond(column.label, values)
+
+# --- Transactions -----------------------------------------------------------
+
+# Runs `work` as one transaction: what it does is kept when it answers `Ok`,
+# and undone when it answers `Error` — so `.try` inside it undoes everything
+# before the failure. Its answer is `work`'s. Begun inside another, it joins
+# that one.
+#
+#   Database.transaction do
+#     Database.insert(organizations).values(row).run.try
+#     Database.insert(memberships).values(member).run.try
+#     Ok(organization)
+#   end
+foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
+  let started = DateTime.epochNanos()
+  Harmat.Logger.queried(Harmat.Odbc.plain("BEGIN"), 0, "")
+  let outcome = Harmat.Connection.atomically(work)
+  let ending = outcome.ok? then "COMMIT" else "ROLLBACK"
+  Harmat.Logger.queried(Harmat.Odbc.plain(ending), (DateTime.epochNanos() - started) / 1000, "")
+  return outcome
+end
 
 # --- Starting a query -------------------------------------------------------
 
@@ -140,7 +200,7 @@ make Select do
       Error(reason) => return Error(reason)
       Ok(built) => do
         let names = @columns.empty? then @source.map { |source| source.names }.or([]) else @columns
-        return Harmat.Connection.ask(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
+        return asked(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
       end
     end
   end
@@ -157,7 +217,7 @@ make Select do
       None => return Error("select() was not given a table: add .from(table)")
       Just(source) => do
         let built = Harmat.Odbc.counting(source.table, [], @confines + @conditions)
-        return Harmat.Connection.ask(built).map { |rows| whole(rows.first.or([]).first.or("0")) }
+        return asked(built).map { |rows| whole(rows.first.or([]).first.or("0")) }
       end
     end
   end
@@ -170,9 +230,13 @@ make Select do
       None => return Error("select() was not given a table: add .from(table)")
       Just(source) => do
         let built = Harmat.Odbc.counting(source.table, [named(column)], @confines + @conditions)
-        let counted : Result<[[String]], String> = Harmat.Connection.ask(built)
+        let counted : Result<[[String]], String> = asked(built)
         return counted.map { |rows|
-          rows.reduce({}) { |tallies, cells| tallies.put(cells.first.or(""), whole(cells.drop(1).first.or("0"))) }
+          rows.reduce({}) { |tallies, cells|
+            let value = cells.first.or("")
+            let tally = whole(cells.drop(1).first.or("0"))
+            tallies.put(value, tally)
+          }
         }
       end
     end
@@ -191,7 +255,7 @@ make Insert do
   foul run -> Result<Integer, String> do
     match this.statement do
       Error(reason) => return Error(reason)
-      Ok(built) => return Harmat.Connection.run(built)
+      Ok(built) => return ran(built)
     end
   end
 end
@@ -210,7 +274,7 @@ make Update do
   foul run -> Result<Integer, String> do
     match this.statement do
       Error(reason) => return Error(reason)
-      Ok(built) => return Harmat.Connection.run(built)
+      Ok(built) => return ran(built)
     end
   end
 end
@@ -222,11 +286,35 @@ make Delete do
 
   # Runs the delete; the number of rows it removed.
   foul run -> Result<Integer, String> do
-    return Harmat.Connection.run(this.statement)
+    return ran(this.statement)
   end
 end
 
 private do
+  # A SELECT, run and timed, and told to the logger (`Harmat.Logger`).
+  foul asked(statement: Statement) -> Result<[[String]], String> do
+    let started = DateTime.epochNanos()
+    let rows = Harmat.Connection.ask(statement)
+    let outcome = match rows do
+      Ok(found) => found.count == 1 then "1 row" else "${found.count} rows"
+      Error(reason) => "failed: ${reason}"
+    end
+    Harmat.Logger.queried(statement, (DateTime.epochNanos() - started) / 1000, outcome)
+    return rows
+  end
+
+  # A statement that changes rows, run and timed, and told to the logger.
+  foul ran(statement: Statement) -> Result<Integer, String> do
+    let started = DateTime.epochNanos()
+    let changed = Harmat.Connection.run(statement)
+    let outcome = match changed do
+      Ok(count) => "${count} changed"
+      Error(reason) => "failed: ${reason}"
+    end
+    Harmat.Logger.queried(statement, (DateTime.epochNanos() - started) / 1000, outcome)
+    return changed
+  end
+
   # A count as a database gives it back: "3", or "3.0" from some drivers.
   whole : String -> Integer
   let whole(text) = text.split(".").first.or("0").to(Integer).or(0)

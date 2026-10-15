@@ -18,4 +18,10 @@ capability Harmat.Connection do
 
   # Runs a SELECT; its rows, each as its cells in column order.
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> = Error("no database connected")
+
+  # Runs `work` as one transaction: every statement it makes on one
+  # connection, with nothing else's in between; kept when it answers `Ok`,
+  # undone when it answers `Error`. `Harmat.Database.transaction` is the
+  # way in.
+  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> = Error("no database connected")
 end

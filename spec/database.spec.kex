@@ -31,6 +31,11 @@ make Echoing, implement: Harmat.Connection do
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
     return Error("${statement.statement} ${statement.params}")
   end
+
+  # Runs the work as it is: an echo has nothing to keep or undo.
+  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+    return work()
+  end
 end
 
 foul dsn(file: String) -> String do
@@ -58,11 +63,15 @@ describe("Harmat.Database statements") do
 
   it("asks for a column among several values") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Database.select([:id]).from(users).where(email.in(["a@b.co", "c@d.co"])).where(credit.eq(5)).all,
-                   Error("SELECT id FROM users WHERE email IN (?, ?) AND credit = ? [a@b.co, c@d.co, 5]"))
+      let among = Database.select([:id]).from(users)
+        .where(email.in(["a@b.co", "c@d.co"]))
+        .where(credit.eq(5))
+        .all
+      Assert.equal(among, Error("SELECT id FROM users WHERE email IN (?, ?) AND credit = ? [a@b.co, c@d.co, 5]"))
       Assert.equal(Database.select([:id]).from(users).where(credit.in([1, 2, 3])).all,
                    Error("SELECT id FROM users WHERE credit IN (?, ?, ?) [1, 2, 3]"))
-      Assert.equal(Database.delete(users).where(id.in([])).run, Error("DELETE FROM users WHERE 1 = 0 []"))
+      Assert.equal(Database.delete(users).where(id.in([])).run,
+                   Error("DELETE FROM users WHERE 1 = 0 []"))
     end
   end
 
@@ -70,7 +79,10 @@ describe("Harmat.Database statements") do
     with Harmat.Connection = Echoing {} do
       Assert.equal(Database.select([:id]).from(users).where(credit.gt(5)).where(credit.lte(10)).all,
                    Error("SELECT id FROM users WHERE credit > CAST(? AS BIGINT) AND credit <= CAST(? AS BIGINT) [5, 10]"))
-      Assert.equal(Database.select([:id]).from(users).where(email.gte("m")).where(email.lt("n")).all,
+      Assert.equal(Database.select([:id]).from(users)
+                     .where(email.gte("m"))
+                     .where(email.lt("n"))
+                     .all,
                    Error("SELECT id FROM users WHERE email >= ? AND email < ? [m, n]"))
     end
   end
@@ -81,7 +93,33 @@ describe("Harmat.Database statements") do
                    Error("SELECT COUNT(*) FROM users WHERE credit > CAST(? AS BIGINT) [0]"))
       Assert.equal(Database.select().from(users).where(eq(owner, "ada")).countBy(:email),
                    Error("SELECT email, COUNT(*) FROM users WHERE owner = ? GROUP BY email [ada]"))
-      Assert.equal(Database.select().count, Error("select() was not given a table: add .from(table)"))
+      Assert.equal(Database.select().count,
+                   Error("select() was not given a table: add .from(table)"))
+    end
+  end
+
+  it("tells the logger each statement, as a line Rails would print") do
+    let found = Harmat.Odbc.Statement {
+      statement: "SELECT id, email FROM users WHERE email = ? AND owner = ?",
+      params: ["ada@example.com", "pbkdf2-sha256$600000$salt$key"]
+    }
+    Assert.equal(
+      Harmat.Log.line(found, 412, "1 row", false),
+      "  users (0.4ms)  SELECT id, email FROM users WHERE email = ? AND owner = ?  [\"ada@example.com\", [FILTERED]]  1 row"
+    )
+    let counted = Harmat.Odbc.Statement { statement: "SELECT COUNT(*) FROM users" }
+    Assert.equal(Harmat.Log.line(counted, 12500, "3 rows", false), "  users (12.5ms)  SELECT COUNT(*) FROM users  3 rows")
+    let digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    let removed = Harmat.Odbc.Statement { statement: "DELETE FROM sessions WHERE id = ?", params: [digest] }
+    Assert.equal(Harmat.Log.line(removed, 900, "1 changed", false), "  sessions (0.9ms)  DELETE FROM sessions WHERE id = ?  [[FILTERED]]  1 changed")
+    # Plain when asked to be.
+    Assert.falsy(Harmat.Log.line(found, 412, "1 row", false).contains?("["+"1;"))
+    # A query runs the same with a logger installed.
+    with Harmat.Connection = Echoing {} do
+      with Harmat.Logger = Harmat.Log.Console { shown?: false } do
+        Assert.equal(Database.select([:id]).from(users).where(id.eq("u1")).all,
+                     Error("SELECT id FROM users WHERE id = ? [u1]"))
+      end
     end
   end
 
@@ -148,13 +186,74 @@ describe("Harmat.Database against a database") do
       Assert.equal(hers.select([:credit]).from(users).all, Ok([{"credit": "5"}]))
       Assert.equal(Database.delete(users).where(eq(id, "u1")).run, Ok(1))
 
-      Database.insert(users).values({id: "u3", email: "eve@example.com", owner: "bob", credit: 7}).run
+      Database.insert(users)
+        .values({
+          id: "u3",
+          email: "eve@example.com",
+          owner: "bob",
+          credit: 7
+        })
+        .run
       Assert.equal(Database.select().from(users).count, Ok(2))
       Assert.equal(Database.select().from(users).where(credit.gt(5)).count, Ok(1))
       Assert.equal(Database.select().from(users).where(eq(owner, "nobody")).count, Ok(0))
       Assert.equal(Database.select().from(users).countBy(:owner), Ok({"bob": 2}))
-      Assert.equal(Database.select().from(users).where(credit.lt(5)).countBy(:email), Ok({"bob@example.com": 1}))
+      Assert.equal(Database.select().from(users)
+                     .where(credit.lt(5))
+                     .countBy(:email),
+                   Ok({"bob@example.com": 1}))
     end
+    FS.File.delete(file)
+  end
+
+  it("keeps a transaction's statements together: all of them, or none") do
+    let file = "harmat_tx_${BEAM.erlang.system_time(:millisecond)}.db"
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
+    with Harmat.Connection = Direct { connection: connection } do
+      let row = { |id| {id: id, email: "${id}@example.com", owner: "ada"} }
+
+      # Answering Ok keeps every statement.
+      let kept = Database.transaction do
+        Database.insert(users).values(row("u1")).run.try
+        Database.insert(users).values(row("u2")).run.try
+        Ok("both")
+      end
+      Assert.equal(kept, Ok("both"))
+      Assert.equal(Database.select().from(users).count, Ok(2))
+
+      # Answering Error undoes them; so does a failure part-way, by `.try`.
+      let refused = Database.transaction do
+        Database.insert(users).values(row("u3")).run.try
+        Error("changed my mind")
+      end
+      Assert.equal(refused, Error("changed my mind"))
+      let broken = Database.transaction do
+        Database.insert(users).values(row("u4")).run.try
+        Database.insert(users).values(row("u1")).run.try
+        Ok("never")
+      end
+      Assert.truthy(broken.error?)
+      Assert.equal(Database.select([:id]).from(users).orderBy([:id]).all, Ok([{"id": "u1"}, {"id": "u2"}]))
+
+      # A transaction inside one joins it: undone with it.
+      let nested = Database.transaction do
+        Database.transaction do
+          Database.insert(users).values(row("u5")).run
+        end
+        Error("all of it")
+      end
+      Assert.equal(nested, Error("all of it"))
+      Assert.equal(Database.select().from(users).count, Ok(2))
+
+      # A statement on its own is kept by itself.
+      Database.delete(users).where(id.eq("u2")).run.try
+    end
+
+    # What was kept is there for another connection.
+    let other = Harmat.Odbc.connect(dsn(file)).try
+    Assert.equal(Harmat.Odbc.query(other, Harmat.Odbc.plain("SELECT id FROM users")), Ok([["u1"]]))
     FS.File.delete(file)
   end
 end

@@ -16,5 +16,6 @@ module Harmat do
   export Harmat.Table
   export Harmat.Database
   export Harmat.Confined
+  export Harmat.Log
   export Harmat.Connection
 end

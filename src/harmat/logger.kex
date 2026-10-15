@@ -1,0 +1,22 @@
+# Harmat.Logger — told of every statement `Harmat.Database` runs: what it
+# was, how long it took and how it went. Outside any `with` nobody is told;
+# a program that wants to see its queries, as Rails shows them in
+# development, installs a logger where it serves:
+#
+#   with Harmat.Logger = Harmat.Log.Console {} do
+#     site.start(host, port)
+#   end
+#
+# `Harmat.Log.Console` prints each statement on a line of its own, its SQL
+# highlighted with Kex's `Console` colors — which are off when the output
+# is not a terminal, or Kex runs with --no-colors:
+#
+#   users (0.4ms)  SELECT id, email FROM users WHERE email = ?  ["ada@example.com"]  1 row
+#
+# Values that look like a secret — a password hash, a token's digest — are
+# printed as [FILTERED], as Rails' `filter_parameters` does.
+capability Harmat.Logger do
+  # A statement has run: in `micros` microseconds, with `outcome` in words —
+  # "3 rows", "1 changed", or what went wrong.
+  foul queried(statement: Harmat.Odbc.Statement, micros: Integer, outcome: String) -> Void = ()
+end

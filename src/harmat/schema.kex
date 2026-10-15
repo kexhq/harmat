@@ -38,7 +38,10 @@ module Harmat.Schema do
   # One WHERE fragment: an equality with a bound value, membership in a list
   # of bound values, an ordering against one — `>`, `>=`, `<` or `<=` — or
   # IS NULL.
-  type Cond = EqCond(String, Any) | InCond(String, [Any]) | CmpCond(String, String, Value) | NullCond(String)
+  type Cond = EqCond(String, Any)
+    | InCond(String, [Any])
+    | CmpCond(String, String, Value)
+    | NullCond(String)
 
   # One value headed for a column in an INSERT or UPDATE.
   type Value = Text(String) | Whole(Integer)
