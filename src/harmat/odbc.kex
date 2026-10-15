@@ -40,14 +40,15 @@ end
 type Dialect = SQLite | PostgreSQL
 
 # Which database a connection string opens: PostgreSQL when its driver says
-# so, SQLite otherwise. A driver Harmat does not know gets the SQLite
+# so — by name, or as psqlodbc, the file its driver is (psqlodbcw.so) —
+# SQLite otherwise. A driver Harmat does not know gets the SQLite
 # spelling — the shared SQL runs everywhere, and only `t.serial` branches.
 detect : String -> Dialect
 let detect(dsn) do
   let parts = dsn.split(";").map { |part| part.trim }
   let named = parts.find { |part| part.lowerCase.startsWith?("driver=") }
   let driver = named.map { |part| part.drop(7).lowerCase }.or("")
-  return PostgreSQL if driver.contains?("postgres")
+  return PostgreSQL if driver.contains?("postgres") || driver.contains?("psqlodbc")
   return SQLite if driver.contains?("sqlite")
   SQLite
 end

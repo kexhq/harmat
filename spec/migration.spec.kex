@@ -1,5 +1,5 @@
 using Harmat.Migration, as: Migration
-using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, execute]
+using Harmat.Migration, only: [createTable, dropTable, addColumn, addIndex, changeColumn, execute]
 using Harmat.Sql, only: [sql]
 using Harmat.Odbc, only: [detect, SQLite, PostgreSQL]
 
@@ -30,6 +30,13 @@ end
 
 let addIndexes = Migration.define :add_indexes, follows: :add_names do
   addIndex(:users, [:role, :name])
+end
+
+let allowOwners = Migration.define :allow_owners, follows: :add_indexes do
+  changeColumn(:users) do |t|
+    t.text(:role, default: "member", oneOf: ["member", "admin"])
+    t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
+  end
 end
 
 let names(steps: [Harmat.Migration.Migration]) -> [String] = steps.map { |step| step.name }
@@ -85,6 +92,27 @@ describe("Harmat.Migration rollback") do
   end
 end
 
+describe("Harmat.Migration changeColumn") do
+  it("alters a column in place on PostgreSQL, and back on rollback") do
+    Assert.equal(Harmat.Migration.statements(allowOwners, PostgreSQL), [
+      "ALTER TABLE users DROP CONSTRAINT users_role_check, ADD CONSTRAINT users_role_check CHECK (role IN ('member', 'admin', 'owner'))"
+    ])
+    Assert.equal(Harmat.Migration.undoing(allowOwners, PostgreSQL), Ok([
+      "ALTER TABLE users DROP CONSTRAINT users_role_check, ADD CONSTRAINT users_role_check CHECK (role IN ('member', 'admin'))"
+    ]))
+    let loosened = Migration.define :loosen, follows: :add_indexes do
+      changeColumn(:users) do |t|
+        t.bigint(:credit, default: 0)
+        t.text(:credit, nullable: true)
+      end
+    end
+    Assert.equal(Harmat.Migration.statements(loosened, PostgreSQL), [
+      "ALTER TABLE users ALTER COLUMN credit TYPE TEXT USING credit::TEXT, ALTER COLUMN credit DROP NOT NULL, ALTER COLUMN credit DROP DEFAULT"
+    ])
+    Assert.equal(Harmat.Migration.irreversible([createUsers, addNames, addIndexes, allowOwners]), [])
+  end
+end
+
 describe("Harmat dialects") do
   it("reads the database from its connection string") do
     Assert.equal(
@@ -96,6 +124,7 @@ describe("Harmat dialects") do
       detect("Driver={PostgreSQL Unicode};Server=db;Port=5432;Database=app;Uid=app;Pwd=secret"),
       PostgreSQL
     )
+    Assert.equal(detect("Driver=/opt/homebrew/lib/psqlodbcw.so;Server=db;Database=app"), PostgreSQL)
     Assert.equal(detect("Driver={SQL Server};Server=db"), SQLite)
   end
 
@@ -180,6 +209,48 @@ describe("Harmat.Migration against a database") do
     Assert.equal(Harmat.Migration.rollback(connection, history, 5), Ok(["create_users"]))
     Assert.equal(Harmat.Migration.rollback(connection, history), Ok([]))
     Assert.equal(Harmat.Migration.migrate(connection, history).map { |done| done.count }, Ok(4))
+    FS.File.delete(file)
+  end
+
+  it("changes a column, keeping the rows and indexes, and refuses rows it would not let in") do
+    let file = "harmat_change_${BEAM.erlang.system_time(:millisecond)}.db"
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
+    let history = [createUsers, addNames, addIndexes]
+    Harmat.Migration.migrate(connection, history).try
+    let table = Harmat.Schema.table("users")
+    let person = { |id, role|
+      Harmat.Odbc.inserting(table, [
+        ("id", Harmat.Schema.Text(id)),
+        ("email", Harmat.Schema.Text("${id}@example.com")),
+        ("role", Harmat.Schema.Text(role))
+      ])
+    }
+    Assert.equal(Harmat.Odbc.execute(connection, person("ada", "admin")), Ok(1))
+    Assert.truthy(Harmat.Odbc.execute(connection, person("bob", "owner")).error?)
+
+    Assert.equal(Harmat.Migration.migrate(connection, history + [allowOwners]), Ok(["allow_owners"]))
+    Assert.equal(Harmat.Odbc.execute(connection, person("bob", "owner")), Ok(1))
+    let listed = Harmat.Odbc.selecting(table, ["id", "role", "name"], [], ["id"])
+    Assert.equal(Harmat.Odbc.query(connection, listed), Ok([["ada", "admin", "it's"], ["bob", "owner", "it's"]]))
+    # The indexes came back with the table: the email is unique still.
+    Assert.truthy(Harmat.Odbc.execute(connection, person("ada", "member")).error?)
+    let indexes = match Harmat.Odbc.dialect(connection) do
+      SQLite => Harmat.Odbc.plain("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'users' AND sql IS NOT NULL ORDER BY name")
+      PostgreSQL => Harmat.Odbc.plain("SELECT indexname FROM pg_indexes WHERE tablename = 'users' AND indexname LIKE '%_index' ORDER BY indexname")
+    end
+    Assert.equal(Harmat.Odbc.query(connection, indexes), Ok([["users_email_index"], ["users_role_name_index"]]))
+
+    # Bob is an owner, which the column as it was does not let in: the
+    # rollback fails, and the table is as it was before it was tried.
+    Assert.truthy(Harmat.Migration.rollback(connection, history + [allowOwners]).error?)
+    Assert.equal(Harmat.Odbc.query(connection, listed).map { |rows| rows.count }, Ok(2))
+    Assert.equal(Harmat.Migration.recorded(connection).map { |done| done.contains?("allow_owners") }, Ok(true))
+    let demoted = Harmat.Odbc.updating(table, [("role", Harmat.Schema.Text("admin"))], [Harmat.Schema.text("id").eqTo("bob")])
+    Harmat.Odbc.execute(connection, demoted).try
+    Assert.equal(Harmat.Migration.rollback(connection, history + [allowOwners]), Ok(["allow_owners"]))
+    Assert.truthy(Harmat.Odbc.execute(connection, person("eve", "owner")).error?)
+    Assert.equal(Harmat.Odbc.query(connection, listed).map { |rows| rows.count }, Ok(2))
     FS.File.delete(file)
   end
 

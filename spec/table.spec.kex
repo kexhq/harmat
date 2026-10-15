@@ -1,5 +1,5 @@
 using Harmat.Migration, as: Migration
-using Harmat.Migration, only: [createTable, addColumn, removeColumn, addIndex]
+using Harmat.Migration, only: [createTable, addColumn, removeColumn, changeColumn, addIndex]
 using Harmat.Table, as: Table
 using Harmat.Table, only: [Definition]
 
@@ -55,5 +55,12 @@ describe("Harmat.Table") do
       addColumn(:users) do |t| t.bigint(:credit, default: 100) end
     end
     Assert.equal(Harmat.Table.drift([users], [createUsers, generous]), ["users.credit is declared differently from how it was migrated"])
+    let mended = Migration.define :mend_credit, follows: :add_credit do
+      changeColumn(:users) do |t|
+        t.bigint(:credit, default: 100)
+        t.bigint(:credit, default: 0)
+      end
+    end
+    Assert.equal(Harmat.Table.drift([users], [createUsers, generous, mended]), [])
   end
 end

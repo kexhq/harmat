@@ -93,12 +93,26 @@ let columnSql(column, dialect) do
     Just(text) => ["DEFAULT ${text}"]
     None => []
   end
-  let choices = column.allowed.map { |value| quoted(value) }.join(", ")
-  let check = column.allowed.empty? then [] else ["CHECK (${column.label} IN (${choices}))"]
-  let front = [column.label, storageSql(column.storage)] + key + presence
+  let check = column.allowed.empty? then [] else [checkSql(column)]
+  let front = [column.label, typeSql(column.storage)] + key + presence
   let back = fallback + check + generated(column.storage, dialect)
   (front + back).join(" ")
 end
+
+# The CHECK that lets only a column's `allowed` values in.
+checkSql : Column -> String
+let checkSql(column) do
+  let choices = column.allowed.map { |value| quoted(value) }.join(", ")
+  "CHECK (${column.label} IN (${choices}))"
+end
+
+# The SQL type a column is stored as.
+typeSql : Storage -> String
+let typeSql(Characters) = "TEXT"
+let typeSql(Wide) = "BIGINT"
+let typeSql(Whole) = "INTEGER"
+let typeSql(Flag) = "BOOLEAN"
+let typeSql(Serial) = "INTEGER"
 
 # A default as SQL: none when it was not given, NULL for `:null`, and
 # anything else written the way the column's own type writes a value.
@@ -112,13 +126,6 @@ let literal(storage, value) = Just("${value}")
 private do
   quoted : String -> String
   let quoted(value) = "'${value.replace("'", "''")}'"
-
-  storageSql : Storage -> String
-  let storageSql(Characters) = "TEXT"
-  let storageSql(Wide) = "BIGINT"
-  let storageSql(Whole) = "INTEGER"
-  let storageSql(Flag) = "BOOLEAN"
-  let storageSql(Serial) = "INTEGER"
 
   # The identity words a serial primary key needs after its type, by database.
   generated : Storage -> Dialect -> [String]

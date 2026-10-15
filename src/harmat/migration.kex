@@ -39,6 +39,21 @@
 # — a `dropTable` that was not told the table's columns, an `execute` given
 # no inverse — and those are refused before anything is touched; `irreversible`
 # lists them so a spec can refuse them before they are merged at all.
+#
+# A column is changed by saying what it was, then what it becomes:
+#
+#   let change = Migration.define :allow_owners, follows: :add_user_names do
+#     changeColumn(:users) do |t|
+#       t.text(:role, default: "member", oneOf: ["member", "admin"])
+#       t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
+#     end
+#   end
+#
+# PostgreSQL alters the column in place. SQLite cannot alter a column at
+# all, so there the table is rebuilt, in one transaction: created again
+# from the definition the database holds with the one column changed, its
+# rows copied over, the old one dropped, its indexes made again. A row the
+# new column does not let in fails the migration, and changes nothing.
 module Harmat.Migration
 
 using Harmat.Schema, only: [table, Text]
@@ -53,6 +68,7 @@ type Operation = CreateTable(String, [Column])
   | RemoveColumn(String, Column)
   | AddIndex(String, [String], Bool)
   | RemoveIndex(String, [String], Bool)
+  | ChangeColumn(String, Column, Column)
   | Execute(String, String?)
 
 # A named step in the history. `parents` names the migrations it follows:
@@ -116,6 +132,21 @@ let addColumn(name, column) = AddColumn(named(name), column(TableBuilder { table
 removeColumn : Atom -> Block<TableBuilder, Column> -> Operation
 let removeColumn(name, column) = RemoveColumn(named(name), column(TableBuilder { table: named(name) }))
 
+# Changes one column — its type, default, whether it may be NULL, the values
+# it lets in. The block has two lines: the column as it was, then as it
+# becomes, each whole and of the same name, so a rollback can change it
+# back. Anything but two lines is refused when the migration runs.
+#
+# (One block, not `from:` and `to:` blocks: a block given as a named
+# argument cannot call `t.text` — kexhq/kex#499.)
+changeColumn : Atom -> Block<TableBuilder, [Column]> -> Operation
+let changeColumn(name, columns) do
+  match columns(TableBuilder { table: named(name) }) do
+    [prior, changed] => ChangeColumn(named(name), prior, changed)
+    _ => ChangeColumn(named(name), unnamed, unnamed)
+  end
+end
+
 # An index named `<table>_<columns>_index`; `unique: true` for a unique one.
 let addIndex(name: Atom, columns: [Atom], unique: Bool = false) -> Operation do
   AddIndex(named(name), columns.map { |column| named(column) }, unique)
@@ -161,6 +192,15 @@ let sqlOf(AddIndex(name, columns, unique?), dialect) do
 end
 let sqlOf(RemoveColumn(name, column), dialect) = "ALTER TABLE ${name} DROP COLUMN ${column.label}"
 let sqlOf(RemoveIndex(name, columns, unique?), dialect) = "DROP INDEX ${indexName(name, columns)}"
+# SQLite rebuilds the table, from what the database holds when it runs
+# (`planned`); here it is only said what the column becomes.
+let sqlOf(ChangeColumn(name, prior, changed), SQLite) do
+  "-- rebuild ${name} with ${Harmat.Column.columnSql(changed, SQLite)}"
+end
+let sqlOf(ChangeColumn(name, prior, changed), PostgreSQL) do
+  let actions = altered(name, prior, changed)
+  actions.empty? then "-- ${name}.${changed.label} is unchanged" else "ALTER TABLE ${name} ${actions.join(", ")}"
+end
 let sqlOf(Execute(statement, undo), dialect) = statement
 
 # The operation that undoes another, or why there is none.
@@ -172,6 +212,7 @@ let reversed(AddColumn(name, column)) = Ok(RemoveColumn(name, column))
 let reversed(RemoveColumn(name, column)) = Ok(AddColumn(name, column))
 let reversed(AddIndex(name, columns, unique?)) = Ok(RemoveIndex(name, columns, unique?))
 let reversed(RemoveIndex(name, columns, unique?)) = Ok(AddIndex(name, columns, unique?))
+let reversed(ChangeColumn(name, prior, changed)) = Ok(ChangeColumn(name, changed, prior))
 let reversed(Execute(statement, Just(undo))) = Ok(Execute(undo, Just(statement)))
 let reversed(Execute(statement, None)) = Error("execute was given no `undo:` statement for: ${statement}")
 
@@ -181,12 +222,17 @@ let reversed(Execute(statement, None)) = Error("execute was given no `undo:` sta
 undoing : Migration -> Result<[String], String>
 undoing : Migration -> Dialect -> Result<[String], String>
 let undoing(step) = undoing(step, SQLite)
-let undoing(step, dialect) do
+let undoing(step, dialect) = opposites(step).map { |undone| undone.map { |operation| sqlOf(operation, dialect) } }
+
+# The operations that undo a migration, last first — or the first reason
+# one of them cannot be undone.
+opposites : Migration -> Result<[Operation], String>
+let opposites(step) do
   step.operations.reverse.reduce(Ok([])) { |collected, operation|
     match (collected, reversed(operation)) do
       (Error(reason), _) => Error(reason)
       (Ok(_), Error(reason)) => Error("migration \"${step.name}\" cannot be rolled back: ${reason}")
-      (Ok(statements), Ok(opposite)) => Ok(statements + [sqlOf(opposite, dialect)])
+      (Ok(operations), Ok(opposite)) => Ok(operations + [opposite])
     end
   }
 end
@@ -204,7 +250,7 @@ irreversible : [Migration] -> [String]
 irreversible : [Migration] -> Dialect -> [String]
 let irreversible(steps) = irreversible(steps, SQLite)
 let irreversible(steps, dialect) = steps.flatMap { |step|
-  match undoing(step, dialect) do
+  match opposites(step) do
     Ok(_) => []
     Error(reason) => [reason]
   end
@@ -286,13 +332,12 @@ foul rollback(connection, steps, count) do
       Error(reason) => Error(reason)
       Ok(done) => do
         let targets = chain.filter { |step| done.contains?(step.name) }.reverse.take(count)
-        let dialect = Harmat.Odbc.dialect(connection)
-        let planned = targets.reduce(Ok([])) { |checked, step|
-          checked.flatMap { |plans|
-            undoing(step, dialect).map { |plan| plans + [(step.name, plan)] }
+        let checked = targets.reduce(Ok([])) { |found, step|
+          found.flatMap { |plans|
+            opposites(step).map { |plan| plans + [(step.name, plan)] }
           }
         }
-        match planned do
+        match checked do
           Error(reason) => Error(reason)
           Ok(plans) => undone(connection, plans, [])
         end
@@ -362,6 +407,9 @@ private do
   quotedNames : [Migration] -> String
   let quotedNames(steps) = steps.map { |step| "\"${step.name}\"" }.join(" and ")
 
+  # What `changeColumn` holds when it was not given two columns.
+  let unnamed = Column { label: "", storage: Characters }
+
   indexName : String -> [String] -> String
   let indexName(name, columns) = "${name}_${columns.join("_")}_index"
 
@@ -378,7 +426,7 @@ private do
   end
 
   foul ran(connection: Any, dialect: Dialect, step: Migration) -> Result<Integer, String> do
-    match each(connection, statements(step, dialect)) do
+    match each(connection, step.operations) do
       Error(reason) => Error(reason)
       Ok(_) => Harmat.Odbc.execute(connection, Harmat.Odbc.inserting(table(LEDGER), [
         ("name", Text(step.name)),
@@ -388,13 +436,117 @@ private do
     end
   end
 
-  foul each(connection: Any, pending: [String]) -> Result<Integer, String> do
+  # Runs operations in order, each as one transaction: most are one
+  # statement, a rebuild several.
+  foul each(connection: Any, pending: [Operation]) -> Result<Integer, String> do
     match pending do
       [] => Ok(0)
-      [statement | rest] => match Harmat.Odbc.execute(connection, Harmat.Odbc.plain(statement)) do
+      [operation | rest] => match performed(connection, operation) do
         Ok(_) => each(connection, rest)
         Error(reason) => Error(reason)
       end
     end
+  end
+
+  foul performed(connection: Any, operation: Operation) -> Result<Integer, String> do
+    match planned(connection, Harmat.Odbc.dialect(connection), operation) do
+      Error(reason) => Error(reason)
+      Ok(statements) => do
+        let outcome = together(connection, statements)
+        match Harmat.Odbc.finish(connection, outcome.ok?) do
+          Error(reason) => outcome.ok? then Error(reason) else outcome
+          Ok(_) => outcome
+        end
+      end
+    end
+  end
+
+  # Statements run inside the transaction the connection is in.
+  foul together(connection: Any, statements: [String]) -> Result<Integer, String> do
+    match statements do
+      [] => Ok(0)
+      [statement | rest] => match Harmat.Odbc.executing(connection, Harmat.Odbc.plain(statement)) do
+        Ok(_) => together(connection, rest)
+        Error(reason) => Error(reason)
+      end
+    end
+  end
+
+  # The statements one operation runs as. A column change is the one that
+  # depends on the database: an `ALTER TABLE`, or nothing when nothing
+  # changes, on PostgreSQL; a rebuild of the table on SQLite.
+  foul planned(connection: Any, dialect: Dialect, operation: Operation) -> Result<[String], String> do
+    match operation do
+      ChangeColumn(name, prior, changed) => do
+        return Error("changeColumn on ${name} takes two columns: what it was, then what it becomes") if changed.label.empty?
+        return Error("changeColumn on ${name} names ${prior.label} and then ${changed.label}; it changes one column, not its name") if prior.label != changed.label
+        return Error("changeColumn cannot make ${name}.${changed.label} a primary key, or stop it being one") if prior.key? != changed.key?
+
+        match dialect do
+          PostgreSQL => return Ok(altered(name, prior, changed).empty? then [] else [sqlOf(operation, dialect)])
+          SQLite => return rebuilding(connection, name, prior, changed)
+        end
+      end
+      _ => return Ok([sqlOf(operation, dialect)])
+    end
+  end
+
+  # SQLite's way to change a column: the table again, as the database holds
+  # it with that one column changed, its rows copied in, and its indexes.
+  # SQLite keeps each table's CREATE TABLE, with what ADD COLUMN appended
+  # to it, as it was run — so the column is there as Harmat wrote it.
+  foul rebuilding(connection: Any, name: String, prior: Column, changed: Column) -> Result<[String], String> do
+    let tableSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${name}'")
+    let indexSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '${name}' AND sql IS NOT NULL")
+    let created = Harmat.Odbc.querying(connection, tableSql)
+      .map { |rows| rows.first.flatMap { |row| row.first }.or("") }
+      .try
+    return Error("there is no table ${name} to change") if created.empty?
+
+    let was = Harmat.Column.columnSql(prior, SQLite)
+    let pieces = created.split(was)
+    return Error("${name}.${prior.label} is not `${was}` in the database, so it cannot be changed from that") if pieces.count != 2
+
+    let columns = "(" + created.split("(").drop(1).join("(")
+    let indexes = Harmat.Odbc.querying(connection, indexSql)
+      .map { |rows| rows.map { |row| row.first.or("") } }
+      .try
+    let rebuilt = "harmat_rebuilt_${name}"
+    let becomes = Harmat.Column.columnSql(changed, SQLite)
+    return Ok([
+      "CREATE TABLE ${rebuilt} ${columns.replace(was, becomes)}",
+      "INSERT INTO ${rebuilt} SELECT * FROM ${name}",
+      "DROP TABLE ${name}",
+      "ALTER TABLE ${rebuilt} RENAME TO ${name}"
+    ] + indexes)
+  end
+
+  # What PostgreSQL's ALTER TABLE does to change a column, as its actions;
+  # none when nothing changes. A CHECK on a column is named
+  # `<table>_<column>_check` by PostgreSQL when the column is made.
+  altered : String -> Column -> Column -> [String]
+  let altered(name, prior, changed) do
+    let column = "ALTER COLUMN ${changed.label}"
+    let constraint = "${name}_${changed.label}_check"
+    let typeSql = Harmat.Column.typeSql(changed.storage)
+    let retyped = prior.storage == changed.storage then [] else ["${column} TYPE ${typeSql} USING ${changed.label}::${typeSql}"]
+    let nulls = match (prior.nullable?, changed.nullable?) do
+      (false, true) => ["${column} DROP NOT NULL"]
+      (true, false) => ["${column} SET NOT NULL"]
+      _ => []
+    end
+    let defaults = match (prior.fallback == changed.fallback, changed.fallback) do
+      (true, _) => []
+      (false, Just(text)) => ["${column} SET DEFAULT ${text}"]
+      (false, None) => ["${column} DROP DEFAULT"]
+    end
+    let checks = if prior.allowed == changed.allowed
+      []
+    else
+      let dropped = prior.allowed.empty? then [] else ["DROP CONSTRAINT ${constraint}"]
+      let added = changed.allowed.empty? then [] else ["ADD CONSTRAINT ${constraint} ${Harmat.Column.checkSql(changed)}"]
+      dropped + added
+    end
+    retyped + nulls + defaults + checks
   end
 end

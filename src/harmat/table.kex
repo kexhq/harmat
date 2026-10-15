@@ -29,7 +29,7 @@ module Harmat.Table
 
 using Harmat.Schema, only: [Table, TextColumn, IntColumn]
 using Harmat.Column, only: [Column, TableBuilder, named]
-using Harmat.Migration, only: [Migration, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, Execute]
+using Harmat.Migration, only: [Migration, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, ChangeColumn, Execute]
 
 # A declared table: its name and its columns, in order.
 record Definition do
@@ -93,6 +93,10 @@ private do
   }
   let applied(tables, RemoveColumn(label, column)) = tables.map { |definition|
     definition.label == label then Definition { label: label, columns: definition.columns.reject { |kept| kept.label == column.label } } else definition
+  }
+  let applied(tables, ChangeColumn(label, prior, changed)) = tables.map { |definition|
+    let columns = definition.columns.map { |column| column.label == changed.label then changed else column }
+    definition.label == label then Definition { label: label, columns: columns } else definition
   }
   let applied(tables, AddIndex(label, columns, unique?)) = tables
   let applied(tables, RemoveIndex(label, columns, unique?)) = tables

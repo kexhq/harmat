@@ -305,12 +305,30 @@ end
 | `dropTable(:t)` | nothing: it cannot be rolled back |
 | `addColumn(:t) do \|t\| ... end` | removing the column |
 | `removeColumn(:t) do \|t\| ... end` | adding it back, as the block says it was |
+| `changeColumn(:t) do \|t\| ... end` | changing it back |
 | `addIndex(:t, [:a, :b], unique: true)` | dropping the index |
 | `removeIndex(:t, [:a, :b])` | creating it again |
 | ``execute(sql`…`, undo: sql`…`)`` | running `undo:`; without one, nothing |
 
 `execute` runs a literal's text as written and binds no values: write them
 into the statement.
+
+`changeColumn` takes two lines: the column as it was, then as it becomes.
+That way it can change a column's type, its default, whether it may be
+NULL, or the values it lets in:
+
+```kex
+changeColumn(:users) do |t|
+  t.text(:role, default: "member", oneOf: ["member", "admin"])
+  t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
+end
+```
+
+PostgreSQL alters the column in place. SQLite can't alter a column, so
+there the table is rebuilt in one transaction: it is created again with the
+column changed, its rows are copied over, and its indexes are made again.
+If an existing row breaks the new column's rules, the migration fails and
+nothing changes.
 
 ### Order is a graph
 
