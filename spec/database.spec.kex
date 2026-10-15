@@ -168,6 +168,8 @@ describe("Harmat.Database against a database") do
     let file = "harmat_db_${BEAM.erlang.system_time(:millisecond)}.db"
     Harmat.Odbc.sideload(".odbc")
     let connection = Harmat.Odbc.connect(dsn(file)).try
+    # A database shared by every run, as on PostgreSQL, keeps the last one's.
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("DROP TABLE IF EXISTS users")).try
     Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
     with Harmat.Connection = Direct { connection: connection } do
       Assert.equal(Database.insert(users).values({id: "u1", email: "ada@example.com", owner: "ada", credit: 90000000000}).run, Ok(1))
@@ -210,6 +212,9 @@ describe("Harmat.Database against a database") do
     let file = "harmat_tx_${BEAM.erlang.system_time(:millisecond)}.db"
     Harmat.Odbc.sideload(".odbc")
     let connection = Harmat.Odbc.connect(dsn(file)).try
+    # On PostgreSQL every spec shares one database: the spec before this one
+    # leaves its table behind.
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("DROP TABLE IF EXISTS users")).try
     Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
     with Harmat.Connection = Direct { connection: connection } do
       let row = { |id| {id: id, email: "${id}@example.com", owner: "ada"} }
