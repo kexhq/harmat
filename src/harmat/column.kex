@@ -215,7 +215,8 @@ end
 #   t.text(:kind, oneOf: Harmat.Column.choices(Type.named("App.Models.Conversation.Kind")))
 #
 # (`Type.of(Channel)` answers the type only where `Channel` is declared;
-# imported, it answers the constructor itself, which has none.)
+# imported, it answers the constructor itself, which has none —
+# kexhq/kex#505. A type is not a value: kexhq/kex#509.)
 choices : Type -> [String]
 let choices(kind) = kind.constructorNames.map { |name| snaked(name) }
 

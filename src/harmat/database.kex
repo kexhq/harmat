@@ -439,7 +439,8 @@ make Insert do
 
   # The row to insert, from a record: each of its fields into the column
   # of its name in snake case, where the table has one, and `extra` for the
-  # columns the record does not carry.
+  # columns the record does not carry. (`valuesOf`, not `record`: that is a
+  # keyword — kexhq/kex#508.)
   let valuesOf(value: Any, extra: {Atom: Any} = {}) -> Insert do
     let fields = Harmat.Database.encoded(value)
       .entries
@@ -581,6 +582,8 @@ private do
 
   # A column's text read as a field's type; `kept` when it cannot be. One
   # clause for each type, by its name: each answers a value of that type.
+  # (Clauses, not one `match`: arms of different types do not check into
+  # `Any` — kexhq/kex#506.)
   read : String -> Type -> Any -> Any
   let read(text, kind, kept) = readAs(kind.name, text, kind, kept)
 
