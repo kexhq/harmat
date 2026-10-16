@@ -8,6 +8,9 @@
 #     t.text(:role, default: "member", oneOf: ["member", "admin"])
 #     t.bigint(:credit, default: 0)
 #     t.boolean(:active, default: true)
+#     t.text(:team_id, references: :teams, doc: "The team they are in")
+#     t.belongsTo(:owner, :users, inverse: :accounts)
+#     t.hasMany(:posts, :posts)
 #   end
 #
 # `t` is a `TableBuilder`; each of its methods makes one `Column`. A column
@@ -31,6 +34,21 @@ record Column do
   fallback : String? = None
   # The only values a CHECK lets in; empty means anything.
   allowed : [String] = []
+  # What the column is, for whoever reads the schema — people and the code
+  # that describes it — and the table whose primary key it holds, if any.
+  # Neither changes the SQL: a reference is described, not enforced.
+  doc : String = ""
+  refers : String = ""
+  # For a reference, what the row belongs to by it — "team" — and what the
+  # table it refers to has many of by it — "memberships". "" lets each be
+  # worked out: the column without `_id`, and the referring table's name.
+  relation : String = ""
+  inverse : String = ""
+  # Set on a `hasMany` line instead of a column: the table that has rows
+  # referring to this one, and the column of theirs that does ("" when only
+  # one does). A table declaration keeps it apart from its columns.
+  many : String = ""
+  via : String = ""
 end
 
 # What a table block is handed: the thing columns are asked of.
@@ -53,23 +71,119 @@ make TableBuilder do
   # defaulted parameters makes every other `.string` call in the program —
   # the standard library's own included — compile to a call of the wrong
   # arity (kexhq/kex#475). Rails has `t.text` too, and TEXT is what this is.
-  let text(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none, oneOf: [String] = []) -> Column do
-    Column { label: named(label), storage: Characters, key?: primaryKey, nullable?: nullable, fallback: literal(Characters, default), allowed: oneOf }
+  let text(
+    label: Atom,
+    primaryKey: Bool = false,
+    nullable: Bool = false,
+    default: Any = :none,
+    oneOf: [String] = [],
+    references: Atom = :none,
+    doc: String = ""
+  ) -> Column do
+    Column {
+      label: named(label),
+      storage: Characters,
+      key?: primaryKey,
+      nullable?: nullable,
+      fallback: literal(Characters, default),
+      allowed: oneOf,
+      doc: doc,
+      refers: referred(references)
+    }
   end
 
   # A 64-bit integer.
-  let bigint(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none) -> Column do
-    Column { label: named(label), storage: Wide, key?: primaryKey, nullable?: nullable, fallback: literal(Wide, default) }
+  let bigint(
+    label: Atom,
+    primaryKey: Bool = false,
+    nullable: Bool = false,
+    default: Any = :none,
+    references: Atom = :none,
+    doc: String = ""
+  ) -> Column do
+    Column {
+      label: named(label),
+      storage: Wide,
+      key?: primaryKey,
+      nullable?: nullable,
+      fallback: literal(Wide, default),
+      doc: doc,
+      refers: referred(references)
+    }
   end
 
   # A 32-bit integer.
-  let int(label: Atom, primaryKey: Bool = false, nullable: Bool = false, default: Any = :none) -> Column do
-    Column { label: named(label), storage: Whole, key?: primaryKey, nullable?: nullable, fallback: literal(Whole, default) }
+  let int(
+    label: Atom,
+    primaryKey: Bool = false,
+    nullable: Bool = false,
+    default: Any = :none,
+    references: Atom = :none,
+    doc: String = ""
+  ) -> Column do
+    Column {
+      label: named(label),
+      storage: Whole,
+      key?: primaryKey,
+      nullable?: nullable,
+      fallback: literal(Whole, default),
+      doc: doc,
+      refers: referred(references)
+    }
   end
 
   # True or false.
-  let boolean(label: Atom, nullable: Bool = false, default: Any = :none) -> Column do
-    Column { label: named(label), storage: Flag, nullable?: nullable, fallback: literal(Flag, default) }
+  let boolean(label: Atom, nullable: Bool = false, default: Any = :none, doc: String = "") -> Column do
+    Column { label: named(label), storage: Flag, nullable?: nullable, fallback: literal(Flag, default), doc: doc }
+  end
+
+  # A reference by name: the text column `<name>_id` — or `column` —
+  # holding a primary key of `table`. Through it a row belongs to one of
+  # `table`, called `name`; and seen from `table`, it has many of these
+  # rows, called `inverse` — unless `table` names them with a `hasMany`,
+  # and this table's name if neither does:
+  #
+  #   t.belongsTo(:team, :teams, inverse: :memberships)
+  #   t.belongsTo(:creator, :users, column: :created_by, default: "")
+  #
+  # A default of "" is a reference that may be to nothing.
+  let belongsTo(
+    name: Atom,
+    table: Atom,
+    inverse: Atom = :none,
+    column: Atom = :none,
+    nullable: Bool = false,
+    default: Any = :none,
+    doc: String = ""
+  ) -> Column do
+    let label = column == :none then "${named(name)}_id" else named(column)
+    Column {
+      label: label,
+      storage: Characters,
+      nullable?: nullable,
+      fallback: literal(Characters, default),
+      doc: doc,
+      refers: named(table),
+      relation: named(name),
+      inverse: referred(inverse)
+    }
+  end
+
+  # Not a column: that rows of `table` refer to this one, and seen from here
+  # are called `name`. The reference is theirs (`belongsTo`); `via` is its
+  # column, needed only when more than one of theirs refers here. Only a
+  # table declaration takes it.
+  #
+  #   t.hasMany(:members, :team_members)
+  #   t.hasMany(:replies, :messages, via: :parent_id)
+  let hasMany(name: Atom, table: Atom, via: Atom = :none, doc: String = "") -> Column do
+    Column {
+      label: named(name),
+      storage: Characters,
+      doc: doc,
+      many: named(table),
+      via: referred(via)
+    }
   end
 
   # An auto-incrementing 32-bit integer, always the primary key. Which words
@@ -77,10 +191,42 @@ make TableBuilder do
   # migration runs on: `AUTOINCREMENT` on SQLite, `GENERATED ALWAYS AS
   # IDENTITY` on PostgreSQL. There is no `default:`: the database assigns
   # the value, so leave a serial out of `values` and `set`.
-  let serial(label: Atom) -> Column do
-    Column { label: named(label), storage: Serial, key?: true }
+  let serial(label: Atom, doc: String = "") -> Column do
+    Column { label: named(label), storage: Serial, key?: true, doc: doc }
   end
 end
+
+# A name in snake case, without a trailing `?`: `ownerId` is "owner_id",
+# `admin?` is "admin", `GroupChat` is "group_chat".
+snaked : String -> String
+let snaked(name) do
+  let bare = name.endsWith?("?") then name.take(name.count - 1) else name
+  let letters = bare.chars.map { |char|
+    char.upper? then "_${char}".lowerCase else "${char}"
+  }
+  let joined = letters.join("")
+  joined.startsWith?("_") then joined.drop(1) else joined
+end
+
+# The values a column of a sum type may hold: its constructors' names in
+# snake case, as Harmat writes and reads them. A type is not a value, so it
+# is given by its full name:
+#
+#   t.text(:kind, oneOf: Harmat.Column.choices(Type.named("App.Models.Conversation.Kind")))
+#
+# (`Type.of(Channel)` answers the type only where `Channel` is declared;
+# imported, it answers the constructor itself, which has none.)
+choices : Type -> [String]
+let choices(kind) = kind.constructorNames.map { |name| snaked(name) }
+
+# The column as the database has it: what it is for and what it refers to
+# taken away, since none of it is in the SQL.
+bare : Column -> Column
+let bare(column) = Column { ...column, doc: "", refers: "", relation: "", inverse: "" }
+
+# Whether a line of a table block is a column, and not a `hasMany`.
+stored? : Column -> Bool
+let stored?(column) = column.many.empty?
 
 # The SQL of a column inside CREATE TABLE or ADD COLUMN: the SQLite spelling.
 columnSql : Column -> String
@@ -124,6 +270,11 @@ let literal(Flag, value) = Just(value == true then "TRUE" else "FALSE")
 let literal(storage, value) = Just("${value}")
 
 private do
+  # The table a reference names; "" for none.
+  referred : Atom -> String
+  let referred(:none) = ""
+  let referred(table) = named(table)
+
   quoted : String -> String
   let quoted(value) = "'${value.replace("'", "''")}'"
 

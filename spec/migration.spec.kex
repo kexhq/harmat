@@ -246,7 +246,7 @@ describe("Harmat.Migration against a database") do
     Assert.truthy(Harmat.Migration.rollback(connection, history + [allowOwners]).error?)
     Assert.equal(Harmat.Odbc.query(connection, listed).map { |rows| rows.count }, Ok(2))
     Assert.equal(Harmat.Migration.recorded(connection).map { |done| done.contains?("allow_owners") }, Ok(true))
-    let demoted = Harmat.Odbc.updating(table, [("role", Harmat.Schema.Text("admin"))], [Harmat.Schema.text("id").eqTo("bob")])
+    let demoted = Harmat.Odbc.updating(table, [("role", Harmat.Schema.Text("admin"))], [Harmat.Schema.text("id") == "bob"])
     Harmat.Odbc.execute(connection, demoted).try
     Assert.equal(Harmat.Migration.rollback(connection, history + [allowOwners]), Ok(["allow_owners"]))
     Assert.truthy(Harmat.Odbc.execute(connection, person("eve", "owner")).error?)

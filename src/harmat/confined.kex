@@ -1,7 +1,7 @@
 # Harmat.Confined — where confined statements start.
 #
-#   let hers = Harmat.Database.within(Users.owner.eq(owner))
-#   hers.update(users).set({credit: 5}).where(Users.id.eq(id)).run
+#   let hers = Harmat.Database.within(Users.owner == owner)
+#   hers.update(users).set({credit: 5}).where(Users.id == id).run
 #
 # Every statement started here carries the conditions it was made with, so
 # it cannot reach a row they do not hold for. (Its own module, apart from

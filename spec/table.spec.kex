@@ -21,12 +21,22 @@ let addCredit = Migration.define :add_credit, follows: :create_users do
   addColumn(:users) do |t| t.bigint(:credit, default: 0) end
 end
 
+type Shade = Light | Dark | MidnightBlue
+
 describe("Harmat.Table") do
+  it("lets in the constructors of a sum type, by their names in snake case") do
+    Assert.equal(Harmat.Column.choices(Type.of(Light)), ["light", "dark", "midnight_blue"])
+    let themes = Table.define :themes do |t|
+      t.text(:shade, oneOf: Harmat.Column.choices(Type.named("Shade")))
+    end
+    Assert.equal(themes.columns.first.map { |column| column.allowed }, Just(["light", "dark", "midnight_blue"]))
+  end
+
   it("names its table and columns") do
     Assert.equal(users.table.label, "users")
     Assert.equal(users.names, ["id", "email", "credit"])
     Assert.equal(users.wholeColumn(:credit).storing(5), ("credit", Harmat.Schema.Whole(5)))
-    Assert.equal(users.textColumn(:email).eqTo("a@b.c"), Harmat.Schema.EqCond("email", "a@b.c"))
+    Assert.equal(users.textColumn(:email) == "a@b.c", Harmat.Schema.EqCond("email", "a@b.c"))
   end
 
   it("replays a history into the tables it leaves behind") do
@@ -48,6 +58,171 @@ describe("Harmat.Table") do
       t.text(:id, primaryKey: true)
     end
     Assert.equal(Harmat.Table.drift([users, accounts], [createUsers, addCredit]), ["table accounts is declared but no migration creates it"])
+  end
+
+  it("derives what belongs to what, and has many of what, from the belongsTos") do
+    let teams = Table.define :teams, doc: "Named sets of people" do |t|
+      t.text(:id, primaryKey: true)
+      t.text(:handle, doc: "What it is mentioned by")
+    end
+    let members = Table.define :team_members do |t|
+      t.text(:id, primaryKey: true)
+      t.belongsTo(:team, :teams)
+      t.belongsTo(:person, :users, doc: "Who is in it")
+      t.belongsTo(:adder, :users, column: :added_by, default: "")
+    end
+    let tables = [users, teams, members]
+    Assert.equal(teams.doc, "Named sets of people")
+    Assert.equal(teams.primaryKey, "id")
+    Assert.equal(members.names, ["id", "team_id", "person_id", "added_by"])
+    Assert.equal(Harmat.Table.relations(tables).map { |relation| "${relation.owner}.${relation.column} -> ${relation.target}.${relation.key}" }, [
+      "team_members.team_id -> teams.id",
+      "team_members.person_id -> users.id",
+      "team_members.added_by -> users.id"
+    ])
+    # A reference whose default is "" may be to nothing.
+    Assert.equal(Harmat.Table.belongsTo(tables, members).map { |relation| "${relation.name} ${relation.optional?}" }, [
+      "team false",
+      "person false",
+      "adder true"
+    ])
+    # With no hasMany declared, the rows are called by the referring table.
+    Assert.equal(Harmat.Table.hasMany(tables, teams).map { |relation| relation.inverse }, ["team_members"])
+    # A belongsTo is a text column as far as the database knows.
+    let created = Migration.define :create_team_members, follows: :add_credit do
+      createTable(:teams) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:handle)
+      end
+      createTable(:team_members) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:team_id)
+        t.text(:person_id)
+        t.text(:added_by, default: "")
+      end
+    end
+    Assert.equal(Harmat.Table.drift(tables, [createUsers, addCredit, created]), [])
+  end
+
+  it("takes a reference by references:, named by inverse:, and what a table has through another") do
+    let teams = Table.define :teams do |t|
+      t.text(:id, primaryKey: true)
+    end
+    let members = Table.define :team_members do |t|
+      t.text(:id, primaryKey: true)
+      t.text(:team_id, references: :teams)
+      t.belongsTo(:person, :users, inverse: :memberships)
+    end
+    let tables = [users, teams, members]
+    Assert.equal(Harmat.Table.relations(tables).map { |relation| "${relation.name}/${relation.inverse}" }, [
+      "team/team_members",
+      "person/memberships"
+    ])
+    Assert.equal(Harmat.Table.throughs(tables, teams).map { |through| "${through.name} via ${through.join}.${through.second.column}" }, [
+      "users via team_members.person_id"
+    ])
+    let numbered = Table.define :numbered do |t|
+      t.bigint(:id, primaryKey: true)
+    end
+    let pointing = Table.define :pointing do |t|
+      t.text(:id, primaryKey: true)
+      t.text(:numbered_id, references: :numbered)
+    end
+    let made = Migration.define :create_both, follows: :add_credit do
+      createTable(:numbered) do |t|
+        t.bigint(:id, primaryKey: true)
+      end
+      createTable(:pointing) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:numbered_id)
+      end
+    end
+    Assert.equal(Harmat.Table.drift([users, numbered, pointing], [createUsers, addCredit, made]), [
+      "pointing.numbered_id is stored differently from numbered.id, which it refers to"
+    ])
+  end
+
+  it("names a has-many where it is declared, and refuses one with no reference back") do
+    let teams = Table.define :teams do |t|
+      t.text(:id, primaryKey: true)
+      t.hasMany(:members, :team_members)
+      t.text(:name)
+    end
+    let members = Table.define :team_members do |t|
+      t.text(:id, primaryKey: true)
+      t.belongsTo(:team, :teams)
+      t.belongsTo(:user, :users)
+    end
+    let tables = [users, teams, members]
+    # A has-many is not a column; it names the rows that refer to its table.
+    Assert.equal(teams.names, ["id", "name"])
+    Assert.equal(teams.many.map { |many| many.label }, ["members"])
+    Assert.equal(Harmat.Table.hasMany(tables, teams).map { |relation| relation.inverse }, ["members"])
+    Assert.equal(Harmat.Table.hasMany(tables, users).map { |relation| relation.inverse }, ["team_members"])
+    let created = Migration.define :create_teams, follows: :add_credit do
+      createTable(:teams) do |t|
+        t.text(:id, primaryKey: true)
+        t.hasMany(:members, :team_members)
+        t.text(:name)
+      end
+      createTable(:team_members) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:team_id)
+        t.text(:user_id)
+      end
+    end
+    Assert.equal(Harmat.Migration.statements(created).first.or(""), "CREATE TABLE teams (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL\n)")
+    Assert.equal(Harmat.Table.drift(tables, [createUsers, addCredit, created]), [])
+
+    let messages = Table.define :messages do |t|
+      t.text(:id, primaryKey: true)
+      t.hasMany(:replies, :messages, via: :parent_id)
+      t.hasMany(:quotes, :messages)
+      t.hasMany(:likes, :reactions)
+      t.belongsTo(:parent, :messages, default: "")
+      t.belongsTo(:quoted, :messages, default: "")
+    end
+    Assert.equal(Harmat.Table.hasMany([messages], messages).map { |relation| "${relation.column} ${relation.inverse}" }, [
+      "parent_id replies",
+      "quoted_id messages"
+    ])
+    let createMessages = Migration.define :create_messages, follows: :add_credit do
+      createTable(:messages) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:parent_id, default: "")
+        t.text(:quoted_id, default: "")
+      end
+    end
+    Assert.equal(Harmat.Table.drift([users, messages], [createUsers, addCredit, createMessages]), [
+      "messages has many quotes, but several columns of messages refer to messages: say which with `via:`",
+      "messages has many likes in reactions, which is not declared"
+    ])
+  end
+
+  it("describes without changing the SQL, and names a reference to nothing") do
+    # What a column is for and what it refers to are not in the database: a
+    # migration that says neither has made what is declared.
+    let described = Table.define :users do |t|
+      t.text(:id, primaryKey: true, doc: "Who they are")
+      t.text(:email, doc: "Where they are written to")
+      t.bigint(:credit, default: 0)
+    end
+    Assert.equal(Harmat.Table.drift([described], [createUsers, addCredit]), [])
+    let posts = Table.define :posts do |t|
+      t.text(:id, primaryKey: true)
+      t.belongsTo(:author, :authors)
+      t.belongsTo(:user, :users)
+    end
+    let createPosts = Migration.define :create_posts, follows: :add_credit do
+      createTable(:posts) do |t|
+        t.text(:id, primaryKey: true)
+        t.text(:author_id)
+        t.text(:user_id)
+      end
+    end
+    Assert.equal(Harmat.Table.drift([users, posts], [createUsers, addCredit, createPosts]), [
+      "posts.author_id refers to authors, which is not declared"
+    ])
   end
 
   it("notices a column declared differently from how it was migrated") do

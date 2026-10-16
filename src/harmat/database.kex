@@ -2,15 +2,15 @@
 #
 #   using Harmat.Database, as: Database
 #
-#   Database.select().from(users).where(Users.email.eq(email)).all
+#   Database.select().from(users).where(Users.email == email).all
 #   Database.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
 #   Database.select().from(messages).orderBy(descending: [:sent_at]).limit(200).all
 #   Database.insert(users).values({id: id, email: email}).run
-#   Database.update(users).set({email: email}).where(Users.id.eq(id)).run
-#   Database.delete(users).where(Users.id.eq(id)).run
+#   Database.update(users).set({email: email}).where(Users.id == id).run
+#   Database.delete(users).where(Users.id == id).run
 #
 # `users` is a table declared with `Harmat.Table`; `Users.id` is one of its
-# typed column handles, so `Users.id.eq(42)` on a text column does not
+# typed column handles, so `Users.id == 42` on a text column does not
 # build. A row comes back as a map from column name to text.
 #
 # Nothing is sent until a builder is finished: `all`, `first` or `run`. It
@@ -22,15 +22,49 @@
 #     Database.select().from(users).all
 #   end
 #
+# The everyday ones have a shorter spelling — each still exactly one query,
+# finished and sent where it is written, answering rows and never anything
+# that queries again later:
+#
+#   Database.every(users)                     # every row
+#   Database.find(users, id)                  # the row of this primary key, or None
+#   Database.findBy(users, {email: email})    # the first row with these values
+#   Database.find(users, id, into: User { id: "" })   # either, as a record
+#   Database.select().from(users).by({owner: "ada"}).pluck(:email)   # one column
+#   Database.insertAll(users, [first, second])            # several rows
+#   Database.exists?(users, {email: email})               # whether any row has these
+#   Database.belongingTo(posts, users, ids)   # the posts of each of these users
+#
+# Any query can answer with records instead of rows, built by the fields of
+# a sample of the record — `.into(User { id: "" })`, `.firstInto(…)` — and
+# narrowed by a map of column to value as well as by conditions:
+#
+#   Database.select().from(users).by({owner: "ada", credit: 5}).into(User { id: "" })
+#
+# A field is filled from the column of its name in snake case —
+# `ownerId` from `owner_id`, `admin?` from `admin` — read as its type: text,
+# a number, a flag ("TRUE", "true", "t", "1" or "yes"), an option ("" is
+# `None`), a list of text (separated by commas), or a constructor of a sum
+# type (`Private` from "private"); a field whose type is an alias is read as
+# the sample's own value is. A field with no column of its name, or
+# whose column holds what its type cannot read, keeps the sample's value;
+# `renamed` maps a field to a column of another name. A constructor written
+# with `values`, `set` or `by` is stored by that same name.
+#
+# `belongingTo` is a has-many loaded for many rows at once: the rows of one
+# table that refer to any of some keys of another, grouped by the key they
+# refer to. Which column refers is what the table declares (`belongsTo`,
+# or `references:`).
+#
 # `Database.within(condition)` starts statements that all carry that condition —
 # reads, updates and deletes alike. What is confined to one owner cannot
 # touch another's rows, whatever the query built on it says.
 module Harmat.Database
 
-using Harmat.Schema, only: [Cond, EqCond, InCond, NullCond, TextColumn, IntColumn, Value]
+using Harmat.Schema, only: [Cond, Value, Text, Whole]
 using Harmat.Odbc, only: [Statement]
 using Harmat.Table, only: [Definition]
-using Harmat.Column, only: [Column, Storage, Characters, Flag, named]
+using Harmat.Column, only: [Column, Storage, Characters, Flag, named, snaked]
 
 # An open connection as `Harmat.Connection`, for code that runs in the
 # process that owns it. (An ODBC connection answers only the process that
@@ -116,17 +150,6 @@ record Delete do
   conditions : [Cond] = []
 end
 
-# --- Conditions -------------------------------------------------------------
-
-# The column equals the value. One function per column type, so the value's
-# type is checked against the column's.
-let eq(column: TextColumn, value: String) -> Cond = EqCond(column.label, value)
-let eq(column: IntColumn, value: Integer) -> Cond = EqCond(column.label, value)
-
-# The column equals one of the values. An empty list matches no row.
-let in(column: TextColumn, values: [String]) -> Cond = InCond(column.label, values)
-let in(column: IntColumn, values: [Integer]) -> Cond = InCond(column.label, values)
-
 # --- Transactions -----------------------------------------------------------
 
 # Runs `work` as one transaction: what it does is kept when it answers `Ok`,
@@ -148,6 +171,145 @@ foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
   return outcome
 end
 
+# --- The everyday queries ---------------------------------------------------
+
+# Every row of a table. (`every`, not `all`: a function of this module
+# named like `Select`'s method `all` compiles to a call of a `$free`
+# function that is not there — as with a capability method,
+# kexhq/kex#492.)
+foul every(table: Definition) -> Result<[{String: String}], String> = select().from(table).all
+
+# Inserts rows one after another, stopping at the first that fails: how
+# many went in, or why one did not. Inside a transaction, a failure undoes
+# them all.
+foul insertAll(table: Definition, rows: [{Atom: Any}]) -> Result<Integer, String> do
+  match rows do
+    [] => return Ok(0)
+    [row | rest] => do
+      insert(table).values(row).run.try
+      return insertAll(table, rest).map { |count| count + 1 }
+    end
+  end
+end
+
+# Whether a table has a row with these values in these columns.
+foul exists?(table: Definition, values: {Atom: Any}) -> Result<Bool, String> do
+  return select().from(table).by(values).count.map { |found| found > 0 }
+end
+
+# The first row of a table with these values in these columns, or `None`.
+foul findBy(table: Definition, values: {Atom: Any}) -> Result<{String: String}?, String> = select().from(table).by(values).first
+
+# The same, as a record like `into`.
+foul findBy(table: Definition, values: {Atom: Any}, into: R) -> Result<R?, String> = select().from(table).by(values).firstInto(into)
+
+# The row of a table whose primary key is `id`, or `None`.
+foul find(table: Definition, id: String) -> Result<{String: String}?, String> do
+  return Error("${table.label} has no primary key") if table.primaryKey.empty?
+
+  return select().from(table)
+    .where(Harmat.Schema.text(table.primaryKey) == id)
+    .first
+end
+
+# The same, as a record like `into`.
+foul find(table: Definition, id: String, into: R) -> Result<R?, String> do
+  return find(table, id).map { |row| row.map { |found| decoded(found, into, {}) } }
+end
+
+# The rows of `owner` that refer to any of `keys` of `target`, by the key each
+# refers to, each key's rows in `orderBy` order: a key nothing refers to is
+# not there. Which column of `owner` refers to `target` is what `owner`
+# declares; when several do, `via` names the one meant, by its column or
+# by what `t.belongsTo` called it.
+foul belongingTo(
+  owner: Definition,
+  target: Definition,
+  keys: [String],
+  via: Atom = :none,
+  orderBy: [Atom] = []
+) -> Result<{String: [{String: String}]}, String> do
+  let referring = owner.columns.filter { |column|
+    let chosen = via == :none || column.label == named(via) || column.relation == named(via)
+    column.refers == target.label && chosen
+  }
+  match referring do
+    [] => return Error("${owner.label} declares no column referring to ${target.label}")
+    [column] => do
+      return Ok({}) if keys.empty?
+
+      let chosen = select().from(owner)
+        .where(Harmat.Schema.text(column.label).in(keys.uniq))
+      let rows = (orderBy.empty? then chosen else chosen.orderBy(orderBy)).all.try
+      return Ok(rows.reduce({}) { |found, row|
+        let key = row.get(column.label).or("")
+        found.put(key, found.get(key).or([]) + [row])
+      })
+    end
+    several => do
+      let names = several.map { |column| column.label }.join(" and ")
+      return Error("${names} of ${owner.label} both refer to ${target.label}: say which with `via:`")
+    end
+  end
+end
+
+# --- Records from rows ------------------------------------------------------
+
+# A record like `sample` with its fields filled from a row (see the top of
+# this module). Not a decoder written for each record: the record's own
+# fields say what to read, by its type as Kex knows it at run time.
+decoded : {String: String} -> R -> {String: String} -> R
+let decoded(row, sample, renamed) do
+  let parts : [Any] = BEAM.erlang.tuple_to_list(sample)
+  let fields = Type.of(sample).fields
+  let filled = fields.zip(parts.drop(1)).map { |pair|
+    match pair do
+      (field, kept) => do
+        let column = renamed.get(field.name).or(snaked(field.name))
+        match row.get(column) do
+          None => kept
+          Just(text) => read(text, field.valueType, kept)
+        end
+      end
+    end
+  }
+  let built : R = BEAM.erlang.list_to_tuple([parts.first.or(:none)] + filled)
+  built
+end
+
+# The conditions that a table's columns hold these values, each written as
+# its column stores it. A name the table does not declare matches no row.
+matches : Definition -> {Atom: Any} -> [Cond]
+let matches(table, values) = values.entries.map { |entry|
+  match entry do
+    (key, value) => match table.columns.find { |column| column.label == named(key) } do
+      None => Harmat.Schema.InCond(named(key), [])
+      Just(column) => matching(column, value)
+    end
+  end
+}
+
+# A record's fields by column name — `ownerId` as `owner_id` — each as a
+# row holds it: an option as its value or "", a list of text joined by
+# commas, a constructor by its name (see `spelled`).
+encoded : Any -> {Atom: Any}
+let encoded(value) do
+  let parts : [Any] = BEAM.erlang.tuple_to_list(value)
+  Type.of(value).fields.zip(parts.drop(1)).reduce({}) { |row, pair|
+    match pair do
+      (field, held) => row.put(BEAM.erlang.binary_to_atom(snaked(field.name)), cell(field.valueType, held))
+    end
+  }
+end
+
+# A constructor as it is stored, and anything else as text: `GroupChat` is
+# "group_chat".
+spelled : Any -> String
+let spelled(value) do
+  let constructor = BEAM.erlang.is_atom(value) && value != true && value != false
+  constructor then snaked("${value}") else "${value}"
+end
+
 # --- Starting a query -------------------------------------------------------
 
 # Every column of the table named in `from`, or only the ones listed.
@@ -167,6 +329,16 @@ make Select do
 
   # Narrows the rows; several `where`s all have to hold.
   let where(condition: Cond) -> Select = Select { ...this, conditions: @conditions + [condition] }
+
+  # Narrows the rows to those with these values in these columns, each value
+  # written the way its declared column stores it. A name the table does not
+  # declare matches no row.
+  let by(values: {Atom: Any}) -> Select do
+    match @source do
+      None => this
+      Just(source) => Select { ...this, conditions: @conditions + Harmat.Database.matches(source, values) }
+    end
+  end
 
   # Sorts the rows: `orderBy([:email])`, or largest first with
   # `orderBy(descending: [:sent_at])` — with `limit`, the newest rows of a
@@ -210,6 +382,24 @@ make Select do
     return this.limit(1).all.map { |rows| rows.first }
   end
 
+  # Runs the query for one column: its value in every row.
+  foul pluck(column: Atom) -> Result<[String], String> do
+    let name = named(column)
+    return Select { ...this, columns: [name] }.all.map { |rows| rows.map { |row| row.get(name).or("") } }
+  end
+
+  # Runs the query: every row, as a record like `sample` (see the top of
+  # this module for how a field is filled).
+  foul into(sample: R, renamed: {String: String} = {}) -> Result<[R], String> do
+    return this.all.map { |rows| rows.map { |row| Harmat.Database.decoded(row, sample, renamed) } }
+  end
+
+  # Runs the query for one row, as a record like `sample`: the first, or
+  # `None`.
+  foul firstInto(sample: R, renamed: {String: String} = {}) -> Result<R?, String> do
+    return this.first.map { |row| row.map { |found| Harmat.Database.decoded(found, sample, renamed) } }
+  end
+
   # Runs the query for how many rows match. The columns, order and limit
   # asked for do not count.
   foul count -> Result<Integer, String> do
@@ -247,6 +437,29 @@ make Insert do
   # The row to insert, by column name: `{id: id, email: email}`.
   let values(row: {Atom: Any}) -> Insert = Insert { ...this, row: row }
 
+  # The row to insert, from a record: each of its fields into the column
+  # of its name in snake case, where the table has one, and `extra` for the
+  # columns the record does not carry.
+  let valuesOf(value: Any, extra: {Atom: Any} = {}) -> Insert do
+    let fields = Harmat.Database.encoded(value)
+      .entries
+      .filter { |entry|
+        match entry do
+          (key, _) => @target.names.contains?(named(key))
+        end
+      }
+      .reduce({}) { |row, entry|
+        match entry do
+          (key, field) => row.put(key, field)
+        end
+      }
+    Insert { ...this, row: extra.entries.reduce(fields) { |row, entry|
+      match entry do
+        (key, field) => row.put(key, field)
+      end
+    } }
+  end
+
   let statement -> Result<Statement, String> do
     assigned(@target, @row).map { |fields| Harmat.Odbc.inserting(@target.table, fields) }
   end
@@ -266,6 +479,9 @@ make Update do
 
   let where(condition: Cond) -> Update = Update { ...this, conditions: @conditions + [condition] }
 
+  # Only the rows with these values in these columns, as `Select.by`.
+  let by(values: {Atom: Any}) -> Update = Update { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) }
+
   let statement -> Result<Statement, String> do
     assigned(@target, @changes).map { |fields| Harmat.Odbc.updating(@target.table, fields, @confines + @conditions) }
   end
@@ -281,6 +497,9 @@ end
 
 make Delete do
   let where(condition: Cond) -> Delete = Delete { ...this, conditions: @conditions + [condition] }
+
+  # Only the rows with these values in these columns, as `Select.by`.
+  let by(values: {Atom: Any}) -> Delete = Delete { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) }
 
   let statement -> Statement = Harmat.Odbc.deleting(@target.table, @confines + @conditions)
 
@@ -340,10 +559,63 @@ private do
     }
   end
 
+  # The condition that a column holds a value, written the way the column
+  # stores it.
+  matching : Column -> Any -> Cond
+  let matching(column, value) do
+    match stored(column.storage, value) do
+      Whole(number) => Harmat.Schema.integer(column.label) == number
+      Text(text) => Harmat.Schema.text(column.label) == text
+    end
+  end
+
+  # A field's value as a row holds it.
+  cell : Type -> Any -> Any
+  let cell(kind, held) = cellAs(kind.name, held)
+
+  cellAs : String -> Any -> Any
+  let cellAs("Option", None) = ""
+  let cellAs("Option", Just(inner)) = inner
+  let cellAs("List", items) = items.map { |item| "${item}" }.join(",")
+  let cellAs(name, held) = held
+
+  # A column's text read as a field's type; `kept` when it cannot be. One
+  # clause for each type, by its name: each answers a value of that type.
+  read : String -> Type -> Any -> Any
+  let read(text, kind, kept) = readAs(kind.name, text, kind, kept)
+
+  readAs : String -> String -> Type -> Any -> Any
+  let readAs("String", text, kind, kept) = text
+  let readAs("Integer", text, kind, kept) = text.trim.split(".").first.or("").to(Integer).or(kept)
+  let readAs("Float", text, kind, kept) = text.trim.to(Float).or(kept)
+  let readAs("Bool", text, kind, kept) = ["TRUE", "true", "t", "1", "yes"].contains?(text.trim)
+  let readAs("Option", "", kind, kept) = None
+  let readAs("Option", text, kind, kept) = Just(read(text, kind.args.first.or(Type.named("String")), kept))
+  let readAs("List", text, kind, kept) = text.split(",").map { |part| part.trim }.reject { |part| part.empty? }
+  let readAs(name, text, kind, kept) do
+    return aliased(text, kept) if kind.constructorNames.empty?
+
+    kind.constructorNames
+      .find { |constructor| snaked(constructor) == text.trim }
+      .map { |constructor| BEAM.erlang.binary_to_existing_atom(constructor) }
+      .or(kept)
+  end
+
+  # A type Kex names by an alias — `type UserId = String` — is read as what
+  # the sample's own value is: text, a whole number, a flag.
+  aliased : String -> Any -> Any
+  let aliased(text, kept) do
+    return text if BEAM.erlang.is_binary(kept)
+    return readAs("Bool", text, Type.named("Bool"), kept) if kept == true || kept == false
+    return readAs("Integer", text, Type.named("Integer"), kept) if BEAM.erlang.is_integer(kept)
+    return readAs("Float", text, Type.named("Float"), kept) if BEAM.erlang.is_float(kept)
+    kept
+  end
+
   # `Whole` is both a stored value in Harmat.Schema and a column's storage
   # in Harmat.Migration, so the values are built by their full names.
   stored : Storage -> Any -> Value
-  let stored(Characters, value) = Harmat.Schema.Text("${value}")
+  let stored(Characters, value) = Harmat.Schema.Text(Harmat.Database.spelled(value))
   let stored(Flag, value) = Harmat.Schema.Text(value == true then "TRUE" else "FALSE")
   let stored(storage, value) = Harmat.Schema.Whole(value)
 end

@@ -2,17 +2,21 @@
 #
 # One concrete record per column kind instead of a generic
 # Column<T>: the checker's record literals never unify with a
-# type parameter, phantom or concrete, so conditions are checked
-# through per-kind methods (age.eqTo(30)) rather than one generic
-# eq. Comparing an integer column to a string still fails the
-# build — at the method call, not in a phantom.
+# type parameter, phantom or concrete, so each kind declares its
+# own comparisons. A comparison of a column with a value is not
+# true or false but a condition, for a WHERE:
 #
-# `eq` is `eqTo` under the name queries read best with:
-# `.where(Users.email.eq(email))`.
+#   .where(Users.email == email)
+#   .where(Users.credit >= 5)
 #
-# Nullable kinds offer eqTo plus isNull. There is deliberately no
-# way to spell `= NULL`: Kex None == None is true, SQL
-# NULL = NULL is unknown, so the builder never renders one.
+# `==`, `!=`, `<`, `<=`, `>` and `>=` each take a value of the
+# column's own type, so comparing an integer column to a string
+# fails the build. Two columns are not compared by them: that is
+# record equality, as it would be without them.
+#
+# Nullable kinds also offer isNull. There is deliberately no way
+# to spell `= NULL`: Kex None == None is true, SQL NULL = NULL is
+# unknown, so the builder never renders one.
 
 module Harmat.Schema do
   record IntColumn do
@@ -36,8 +40,8 @@ module Harmat.Schema do
   end
 
   # One WHERE fragment: an equality with a bound value, membership in a list
-  # of bound values, an ordering against one — `>`, `>=`, `<` or `<=` — or
-  # IS NULL.
+  # of bound values, a comparison with one — `<>`, `>`, `>=`, `<` or `<=` —
+  # or IS NULL.
   type Cond = EqCond(String, Any)
     | InCond(String, [Any])
     | CmpCond(String, String, Value)
@@ -61,117 +65,93 @@ module Harmat.Schema do
   table : String -> Table
   let table(name: String) -> Harmat.Schema.Table = Table { label: name }
 
-  # `storing` is the write-side twin of `eqTo`: the column paired with a
+  # `storing` is the write-side twin of `==`: the column paired with a
   # value of its own type, for `Harmat.Odbc.inserting` and `updating`.
   # Storing a string in an integer column fails the build the same way
   # comparing them does.
   make IntColumn do
-    eqTo :> Integer -> Cond
-    let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+    let ==(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    eq :> Integer -> Cond
-    let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
-
-    in :> [Integer] -> Cond
-    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    let !=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<>", Whole(val))
 
     # Larger than, at least, smaller than, at most: by number for a number
     # column, and by the text's own order for a text one.
-    gt :> Integer -> Cond
-    let gt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
+    let <(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
 
-    gte :> Integer -> Cond
-    let gte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+    let <=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
 
-    lt :> Integer -> Cond
-    let lt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
+    let >(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
 
-    lte :> Integer -> Cond
-    let lte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
+    let >=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+
+    in :> [Integer] -> Cond
+    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     storing :> Integer -> (String, Value)
     let storing(val: Integer) -> (String, Harmat.Schema.Value) = (@label, Whole(val))
   end
 
   make TextColumn do
-    eqTo :> String -> Cond
-    let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+    let ==(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    eq :> String -> Cond
-    let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
-
-    in :> [String] -> Cond
-    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    let !=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<>", Text(val))
 
     # Larger than, at least, smaller than, at most: by number for a number
     # column, and by the text's own order for a text one.
-    gt :> String -> Cond
-    let gt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
+    let <(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
 
-    gte :> String -> Cond
-    let gte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+    let <=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
 
-    lt :> String -> Cond
-    let lt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
+    let >(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
 
-    lte :> String -> Cond
-    let lte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
+    let >=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+
+    in :> [String] -> Cond
+    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     storing :> String -> (String, Value)
     let storing(val: String) -> (String, Harmat.Schema.Value) = (@label, Text(val))
   end
 
   make OptIntColumn do
-    eqTo :> Integer -> Cond
-    let eqTo(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
+    let ==(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    eq :> Integer -> Cond
-    let eq(val: Integer) -> Harmat.Schema.Cond = EqCond(@label, val)
-
-    in :> [Integer] -> Cond
-    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    let !=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<>", Whole(val))
 
     # Larger than, at least, smaller than, at most: by number for a number
     # column, and by the text's own order for a text one.
-    gt :> Integer -> Cond
-    let gt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
+    let <(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
 
-    gte :> Integer -> Cond
-    let gte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+    let <=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
 
-    lt :> Integer -> Cond
-    let lt(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<", Whole(val))
+    let >(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">", Whole(val))
 
-    lte :> Integer -> Cond
-    let lte(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Whole(val))
+    let >=(val: Integer) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Whole(val))
+
+    in :> [Integer] -> Cond
+    let in(vals: [Integer]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)
   end
 
   make OptTextColumn do
-    eqTo :> String -> Cond
-    let eqTo(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
+    let ==(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
 
-    eq :> String -> Cond
-    let eq(val: String) -> Harmat.Schema.Cond = EqCond(@label, val)
-
-    in :> [String] -> Cond
-    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
+    let !=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<>", Text(val))
 
     # Larger than, at least, smaller than, at most: by number for a number
     # column, and by the text's own order for a text one.
-    gt :> String -> Cond
-    let gt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
+    let <(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
 
-    gte :> String -> Cond
-    let gte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+    let <=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
 
-    lt :> String -> Cond
-    let lt(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<", Text(val))
+    let >(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">", Text(val))
 
-    lte :> String -> Cond
-    let lte(val: String) -> Harmat.Schema.Cond = CmpCond(@label, "<=", Text(val))
+    let >=(val: String) -> Harmat.Schema.Cond = CmpCond(@label, ">=", Text(val))
+
+    in :> [String] -> Cond
+    let in(vals: [String]) -> Harmat.Schema.Cond = InCond(@label, vals)
 
     isNull :> Cond
     let isNull -> Harmat.Schema.Cond = NullCond(@label)

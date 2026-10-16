@@ -11,7 +11,7 @@ describe "Harmat.Query builder" do
 
   it "binds runtime values as params" do
     let userId = 42
-    let q = select(["name"]).from(table("users")).where([Harmat.Schema.integer("id").eqTo(userId)]).emit()
+    let q = select(["name"]).from(table("users")).where([Harmat.Schema.integer("id") == userId]).emit()
     Assert.equal(q.statement, "SELECT name FROM users WHERE id = ?")
     Assert.equal(q.params, [42])
   end
@@ -40,17 +40,17 @@ describe "Harmat.Query builder" do
   it "renders comparisons with their operator" do
     let q = select(["name"])
       .from(table("users"))
-      .where([Harmat.Schema.integer("age").gte(18)])
+      .where([Harmat.Schema.integer("age") >= 18])
       .emit()
     Assert.equal(q.statement, "SELECT name FROM users WHERE age >= ?")
     Assert.equal(q.params, [18])
-    let named = select(["name"]).from(table("users")).where([text("name").lt("m")]).emit()
+    let named = select(["name"]).from(table("users")).where([text("name") < "m"]).emit()
     Assert.equal(named.statement, "SELECT name FROM users WHERE name < ?")
     Assert.equal(named.params, ["m"])
   end
 
   it "compares nullable columns with plain values" do
-    let q = select(["name"]).from(table("users")).where([optInteger("age").eqTo(30)]).emit()
+    let q = select(["name"]).from(table("users")).where([optInteger("age") == 30]).emit()
     Assert.equal(q.statement, "SELECT name FROM users WHERE age = ?")
     Assert.equal(q.params, [30])
   end
@@ -62,7 +62,7 @@ describe "Harmat.Query builder" do
   end
 
   it "compares text columns to strings" do
-    let q = select(["id"]).from(table("users")).where([text("name").eqTo("ada")]).emit()
+    let q = select(["id"]).from(table("users")).where([text("name") == "ada"]).emit()
     Assert.equal(q.statement, "SELECT id FROM users WHERE name = ?")
     Assert.equal(q.params, ["ada"])
   end
@@ -82,7 +82,7 @@ describe "Harmat.Sql tag" do
   end
 
   it "checks optText the same way" do
-    let q = select(["id"]).from(table("users")).where([optText("nick").eqTo("al")]).emit()
+    let q = select(["id"]).from(table("users")).where([optText("nick") == "al"]).emit()
     Assert.equal(q.statement, "SELECT id FROM users WHERE nick = ?")
     Assert.equal(q.params, ["al"])
   end
@@ -101,13 +101,13 @@ describe("Harmat.Odbc statements") do
   end
 
   it("updates the rows a condition selects") do
-    let q = Harmat.Odbc.updating(users, [Harmat.Schema.integer("age").storing(37)], [Harmat.Schema.text("name").eqTo("ada")])
+    let q = Harmat.Odbc.updating(users, [Harmat.Schema.integer("age").storing(37)], [Harmat.Schema.text("name") == "ada"])
     Assert.equal(q.statement, "UPDATE users SET age = CAST(? AS BIGINT) WHERE name = ?")
     Assert.equal(q.params, ["37", "ada"])
   end
 
   it("deletes and selects with the same conditions") do
-    let gone = Harmat.Odbc.deleting(users, [Harmat.Schema.text("name").eqTo("ada"), Harmat.Schema.optInteger("age").isNull])
+    let gone = Harmat.Odbc.deleting(users, [Harmat.Schema.text("name") == "ada", Harmat.Schema.optInteger("age").isNull])
     Assert.equal(gone.statement, "DELETE FROM users WHERE name = ? AND age IS NULL")
     let listed = Harmat.Odbc.selecting(users, ["id", "name"], [], ["name"])
     Assert.equal(listed.statement, "SELECT id, name FROM users ORDER BY name")

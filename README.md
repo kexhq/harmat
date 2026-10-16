@@ -10,7 +10,7 @@ using Harmat.Database, as: Database
 
 Database.select([:id, :email])
   .from(users)
-  .where(owner.eq("ada"))
+  .where(owner == "ada")
   .orderBy(descending: [:created_at])
   .limit(10)
   .all
@@ -74,9 +74,51 @@ let email = users.textColumn(:email)     # compares to a String
 let owner = users.textColumn(:owner)
 let credit = users.wholeColumn(:credit)  # compares to an Integer
 
-email.eq("ada@example.com")   # a condition
-credit.eq("five")             # does not build
+email == "ada@example.com"   # a condition, not true or false
+email != "ada@example.com"
+credit >= 5
+credit == "five"             # does not build
 ```
+
+A comparison of a column with a value builds a condition for a `WHERE`:
+`==`, `!=`, `<`, `<=`, `>` and `>=`, each taking a value of the column's own
+type. Comparing two columns is record equality, as it would be without them.
+
+### What a table is for, and what it belongs to
+
+A table and its columns can say what they are for, a `belongsTo` is a column
+that refers to another table, and a `hasMany` names the rows of another
+table that refer to this one. They are descriptions: `belongsTo` is a plain
+text column to the database, and `hasMany` is not a column at all.
+
+```kex
+let members = Table.define :team_members, doc: "Who is in which team" do |t|
+  t.text(:id, primaryKey: true)
+  t.belongsTo(:team, :teams)
+  t.belongsTo(:user, :users, doc: "A person or a bot")
+  t.belongsTo(:adder, :users, column: :added_by, default: "")
+end
+
+let teams = Table.define :teams do |t|
+  t.text(:id, primaryKey: true)
+  t.hasMany(:members, :team_members)
+end
+```
+
+`t.belongsTo(:team, :teams)` is the column `team_id`; `column:` names one
+that is not `<name>_id`, and a default of `""` makes the reference optional.
+A plain column can refer too, as a migration would write it —
+`t.text(:team_id, references: :teams)` — and `belongsTo(…, inverse:
+:memberships)` names the other side from this one. A `hasMany` outnames
+both; with no name anywhere, the rows are called by the referring table's
+name, and `via:` says which column one means when several refer back. A
+table that refers to two others joins them: `throughs` lists what a table
+has many of through it.
+`Harmat.Table.relations(tables)` lists every relationship, and
+`belongsTo(tables, table)` and `hasMany(tables, table)` a single table's: what
+a diagram, a generator or docs start from. Drift checks that each
+reference names a declared table with a primary key, stored the way the
+column is, and that each `hasMany` matches exactly one of them.
 
 ## Queries
 
@@ -89,13 +131,13 @@ Database.select().from(users).all
 Database.select([:id, :email]).from(users).orderBy([:email]).limit(10).all
 
 # One row, or None.
-Database.select().from(users).where(email.eq(address)).first
+Database.select().from(users).where(email == address).first
 
-# Larger or smaller: gt, gte, lt and lte, by number or by text.
-Database.select().from(users).where(credit.gte(5)).all
+# Larger or smaller: <, <=, > and >=, by number or by text.
+Database.select().from(users).where(credit >= 5).all
 
 # How many: in all, or for each value of a column.
-Database.select().from(users).where(owner.eq("ada")).count      # Ok(2)
+Database.select().from(users).where(owner == "ada").count      # Ok(2)
 Database.select().from(users).countBy(:owner)                  # Ok({"ada": 2, "bob": 1})
 
 # A column among several values; an empty list matches nothing.
@@ -103,15 +145,15 @@ Database.select().from(users).where(email.in(addresses)).all
 
 # Several conditions all have to hold.
 Database.select().from(users)
-  .where(owner.eq("ada"))
-  .where(credit.eq(5))
+  .where(owner == "ada")
+  .where(credit == 5)
   .orderBy([:email], descending: [:credit])
   .all
 
 # Writes answer with the number of rows they changed.
 Database.insert(users).values({id: id, email: address, credit: 5}).run
-Database.update(users).set({credit: 6}).where(email.eq(address)).run
-Database.delete(users).where(email.eq(address)).run
+Database.update(users).set({credit: 6}).where(email == address).run
+Database.delete(users).where(email == address).run
 ```
 
 Every statement `Database` runs is timed and told to `Harmat.Logger`, a
@@ -141,6 +183,54 @@ end
 written the way its declared column stores it, and a name the table does
 not declare is an error from Harmat rather than one from the database.
 
+### The everyday ones, shorter
+
+Each of these is still exactly one query, sent where it is written, and
+never something that queries again later:
+
+```kex
+Database.every(users)                                   # every row
+Database.find(users, "u1")                              # the row with this primary key, or None
+Database.findBy(users, {email: address})                # the first row with these values
+Database.exists?(users, {email: address})               # whether there is one
+Database.select().from(users).by({owner: "ada"}).pluck(:email)
+Database.insertAll(memberships, [first, second])        # several rows, stopping at a failure
+Database.belongingTo(posts, users, ids, via: :author)   # a has-many for many rows at once
+```
+
+`by` narrows any select, update or delete by a map of column to value, each
+written the way its column stores it, so the plain equalities need no
+`where`. `belongingTo` gives back the rows of `posts` that refer to any of
+`ids`, grouped by the key each refers to, in one `IN` query; the column is
+the one `posts` declares, and `via:` picks one by name or column when
+several refer to the same table. (It is `every`, not `all`, while a module
+function named like `Select`'s method `all` is not found.)
+
+### Records instead of rows
+
+A query answers with records when it is given a sample of one:
+
+```kex
+Database.select().from(users).by({owner: "ada"}).into(User { id: "" })
+Database.find(users, id, into: User { id: "" })
+Database.insert(users).valuesOf(user, extra: {created_at: now}).run
+```
+
+A field is filled from the column of its name in snake case — `ownerId` from
+`owner_id`, `admin?` from `admin` — read as its type: text, a number, a flag
+(`TRUE`, `true`, `t`, `1` or `yes`), an option (`""` is `None`), a list of text
+separated by commas, or a constructor of a sum type (`GroupChat` from
+`group_chat`). An alias of a type is read as the sample's own value is. What
+a row does not say, or cannot, the sample keeps; `renamed:` maps a field to a
+column of another name. `valuesOf` goes the other way: each field into the
+column of its name, where the table has one, and `extra:` for the rest. A
+constructor written anywhere — `values`, `set`, `by` — is stored by that same
+snake-case name, and `Harmat.Column.choices(Type.named("App.Models.Kind"))`
+lists them for a column's `oneOf:`, so the CHECK follows the type.
+
+There is no decoder to write per record: the record's own fields, as Kex
+knows them at run time, say what to read.
+
 ### Confined statements
 
 `Database.within(condition)` starts statements that all carry a condition —
@@ -148,8 +238,8 @@ reads, updates and deletes alike. What is confined to one owner cannot reach
 another's rows, whatever the query built on it goes on to say:
 
 ```kex
-let hers = Database.within(owner.eq("ada"))
-hers.update(users).set({credit: 1}).where(email.eq(address)).run
+let hers = Database.within(owner == "ada")
+hers.update(users).set({credit: 1}).where(email == address).run
 # UPDATE users SET credit = CAST(? AS BIGINT) WHERE owner = ? AND email = ?
 ```
 
@@ -389,8 +479,10 @@ rewritten.)
 
 ## What it does not do
 
-- A condition is `eq`, `in`, `gt`/`gte`/`lt`/`lte` or `isNull`. There is no
-  `LIKE` or `OR` in the builder, and no joins: reach for `sql`.
+- A condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), `in` or
+  `isNull`. There is no `LIKE` or `OR` in the builder — Kex does not let
+  `&&` and `||` be overloaded, so several `where`s are AND — and no joins:
+  reach for `sql`.
 - Rows come back as maps of text, not as records. Turning one into a record
   is the caller's (kexhq/kex#487). A `NULL` reads as `""`.
 - No savepoints: a transaction begun inside another joins it, and undoing

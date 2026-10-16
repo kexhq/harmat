@@ -22,19 +22,71 @@
 # and the migrations disagree" is a failed spec or a refused boot instead of
 # an SQL error on some later request.
 #
+# A table and its columns can also say what they are for, and a column what
+# it refers to — descriptions for people, and for code that reads the
+# schema, such as a package drawing it. They change no SQL:
+#
+#   let members = Table.define :team_members, doc: "Who is in which team" do |t|
+#     t.text(:id, primaryKey: true)
+#     t.text(:team_id, references: :teams)
+#     t.text(:user_id, references: :users)
+#   end
+#
+# The relationships follow from the references, and only from them: a
+# column referring to a table is a "belongs to", and seen from that table a
+# "has many". `t.belongsTo` writes one with its name, and `t.hasMany` — no
+# column — names the other side:
+#
+#   t.belongsTo(:team, :teams, inverse: :memberships)
+#   t.hasMany(:members, :team_members)
+#
+# A table referring to two others joins them: a team has many `users`
+# through its memberships. `relations` and `throughs` list them; nothing
+# loads anything by itself.
+#
 # (The plan in the Kex repository's docs/web-stack-plan.md goes further: one
 # `compiled do` declaration generating the row record and the handles, with
 # drift a build error. That waits on `compiled do` working across packages.)
 module Harmat.Table
 
 using Harmat.Schema, only: [Table, TextColumn, IntColumn]
-using Harmat.Column, only: [Column, TableBuilder, named]
+using Harmat.Column, only: [Column, TableBuilder, Serial, named, bare]
 using Harmat.Migration, only: [Migration, Operation, CreateTable, DropTable, AddColumn, RemoveColumn, AddIndex, RemoveIndex, ChangeColumn, Execute]
 
-# A declared table: its name and its columns, in order.
+# A declared table: its name, its columns in order, what it is for, and
+# the has-manys it declares (`hasMany` lines, which are not columns).
 record Definition do
   label : String
   columns : [Column] = []
+  doc : String = ""
+  many : [Column] = []
+end
+
+# One table referring to another: `owner.column` holds a primary key of
+# `target`, `key`. From the owner it belongs to the target, called `name`;
+# from the target it has many of the owner, called `inverse`. `optional?`
+# when the column may hold none: it may be NULL, or its default is the
+# empty text.
+record Relation do
+  owner : String
+  column : String
+  target : String
+  key : String
+  name : String
+  inverse : String
+  optional? : Bool = false
+end
+
+# A has-many across a table that joins two: `source` has many `target`,
+# called `name`, through the rows of `join` — which refers to `source` by
+# `first` and to `target` by `second`.
+record Through do
+  source : String
+  name : String
+  join : String
+  target : String
+  first : Relation
+  second : Relation
 end
 
 # Declares a table.
@@ -43,7 +95,21 @@ end
 # @param columns [Block<TableBuilder, [Column]>] its columns, as in `createTable`
 # @return [Definition] the declaration
 define : Atom -> Block<TableBuilder, [Column]> -> Definition
-let define(label, columns) = Definition { label: named(label), columns: columns(TableBuilder { table: named(label) }) }
+let define(label, columns) = declared(named(label), "", columns(TableBuilder { table: named(label) }))
+
+# Declares a table, saying what it is for.
+define : Atom -> String -> Block<TableBuilder, [Column]> -> Definition
+let define(label, doc: String, columns) = declared(named(label), doc, columns(TableBuilder { table: named(label) }))
+
+# A declaration from the lines of its block: the columns, and apart from
+# them the has-manys.
+declared : String -> String -> [Column] -> Definition
+let declared(label, doc, lines) = Definition {
+  label: label,
+  columns: lines.filter { |line| Harmat.Column.stored?(line) },
+  doc: doc,
+  many: lines.reject { |line| Harmat.Column.stored?(line) }
+}
 
 make Definition do
   # The table, for `Harmat.Odbc` statements.
@@ -63,7 +129,62 @@ make Definition do
   # A handle on an integer column.
   wholeColumn :> Atom -> IntColumn
   let wholeColumn(name) = Harmat.Schema.integer(named(name))
+
+  # The column that is the primary key; "" for a table without one.
+  primaryKey :> String
+  let primaryKey = @columns.find { |column| column.key? }.map { |column| column.label }.or("")
 end
+
+# Every reference among some tables, as a relation: in the order the tables
+# and their columns are declared. One to a table not among them is left out
+# (`drift` names it).
+relations : [Definition] -> [Relation]
+let relations(tables) = tables.flatMap { |owner|
+  owner.columns
+    .filter { |column| !column.refers.empty? }
+    .flatMap { |column|
+      tables
+        .filter { |target| target.label == column.refers }
+        .map { |target|
+          Relation {
+            owner: owner.label,
+            column: column.label,
+            target: target.label,
+            key: target.primaryKey,
+            name: column.relation.empty? then unsuffixed(column.label) else column.relation,
+            inverse: inverseOf(target, owner, column),
+            optional?: column.nullable? || column.fallback == Just("''")
+          }
+        }
+    }
+}
+
+# What a table belongs to: its own references.
+belongsTo : [Definition] -> Definition -> [Relation]
+let belongsTo(tables, table) = relations(tables).filter { |relation| relation.owner == table.label }
+
+# What a table has many of: the references to it.
+hasMany : [Definition] -> Definition -> [Relation]
+let hasMany(tables, table) = relations(tables).filter { |relation| relation.target == table.label }
+
+# What a table has many of through the tables that join it to another: for
+# each reference to it, every other reference of the same row, called by
+# the table that one refers to.
+throughs : [Definition] -> Definition -> [Through]
+let throughs(tables, table) = hasMany(tables, table).flatMap { |first|
+  belongsTo(tables, Definition { label: first.owner })
+    .reject { |second| second.column == first.column }
+    .map { |second|
+      Through {
+        source: table.label,
+        name: second.target,
+        join: first.owner,
+        target: second.target,
+        first: first,
+        second: second
+      }
+    }
+}
 
 # The tables a migration history produces, by replaying its operations in
 # order. Indexes and raw SQL do not change a table's columns and are skipped.
@@ -80,11 +201,55 @@ drift : [Definition] -> [Migration] -> [String]
 let drift(declared, steps) do
   match replayed(steps) do
     Error(reason) => [reason]
-    Ok(migrated) => declared.flatMap { |definition| compared(definition, migrated) } + undeclared(declared, migrated)
+    Ok(migrated) => do
+      let compared = declared.flatMap { |definition| compared(definition, migrated) }
+      compared + undeclared(declared, migrated) + dangling(declared) + unmatched(declared)
+    end
   end
 end
 
 private do
+  # What `target` calls the rows of `owner` that refer to it by `column`: the
+  # name its own `hasMany` gives them — one with no `via` only when no other
+  # column of `owner` refers to it — else the one the reference gives, else
+  # the referring table's.
+  inverseOf : Definition -> Definition -> Column -> String
+  let inverseOf(target, owner, column) do
+    let alone = owner.columns.count { |each| each.refers == target.label } == 1
+    let declared = target.many.find { |many|
+      many.many == owner.label && (many.via == column.label || (many.via.empty? && alone))
+    }
+    match declared do
+      Just(many) => many.label
+      None => column.inverse.empty? then owner.label else column.inverse
+    end
+  end
+
+  # A has-many that matches no reference back, or several.
+  unmatched : [Definition] -> [String]
+  let unmatched(declared) = declared.flatMap { |table|
+    table.many.flatMap { |many|
+      let place = "${table.label} has many ${many.label}"
+      match declared.find { |owner| owner.label == many.many } do
+        None => ["${place} in ${many.many}, which is not declared"]
+        Just(owner) => do
+          let back = owner.columns.filter { |column|
+            column.refers == table.label && (many.via.empty? || many.via == column.label)
+          }
+          match back.count do
+            0 => ["${place}, but no column of ${many.many} refers to ${table.label}"]
+            1 => []
+            _ => ["${place}, but several columns of ${many.many} refer to ${table.label}: say which with `via:`"]
+          end
+        end
+      end
+    }
+  }
+
+  # A column's name without `_id`: what a reference by it is called.
+  unsuffixed : String -> String
+  let unsuffixed(label) = label.endsWith?("_id") then label.take(label.count - 3) else label
+
   applied : [Definition] -> Operation -> [Definition]
   let applied(tables, CreateTable(label, columns)) = tables + [Definition { label: label, columns: columns }]
   let applied(tables, DropTable(label, columns)) = tables.reject { |definition| definition.label == label }
@@ -116,10 +281,33 @@ private do
       .map { |column| "${declared.label}.${column.label} is declared but no migration adds it" }
     let extra = actual.columns.reject { |column| declared.names.contains?(column.label) }
       .map { |column| "${declared.label}.${column.label} is migrated but not declared" }
-    let changed = declared.columns.filter { |column| actual.columns.any? { |other| other.label == column.label && other != column } }
+    let changed = declared.columns.filter { |column|
+      actual.columns.any? { |other| other.label == column.label && bare(other) != bare(column) }
+    }
       .map { |column| "${declared.label}.${column.label} is declared differently from how it was migrated" }
     missing + extra + changed
   end
+
+  # References to a table that is not declared, or has no primary key, or
+  # whose key is stored differently from the column referring to it.
+  dangling : [Definition] -> [String]
+  let dangling(declared) = declared.flatMap { |owner|
+    owner.columns
+      .filter { |column| !column.refers.empty? }
+      .flatMap { |column|
+        let place = "${owner.label}.${column.label}"
+        match declared.find { |target| target.label == column.refers } do
+          None => ["${place} refers to ${column.refers}, which is not declared"]
+          Just(target) => match target.columns.find { |each| each.key? } do
+            None => ["${place} refers to ${column.refers}, which has no primary key"]
+            Just(key) => do
+              let fits = key.storage == column.storage || key.storage == Serial
+              fits then [] else ["${place} is stored differently from ${column.refers}.${key.label}, which it refers to"]
+            end
+          end
+        end
+      }
+  }
 
   undeclared : [Definition] -> [Definition] -> [String]
   let undeclared(declared, migrated) do

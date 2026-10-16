@@ -113,7 +113,7 @@ let merge(name, heads) = Migration { name: named(name), parents: heads.map { |pa
 # Creates a table. The block is handed a `TableBuilder` and collects the
 # table's columns.
 createTable : Atom -> Block<TableBuilder, [Column]> -> Operation
-let createTable(name, columns) = CreateTable(named(name), columns(TableBuilder { table: named(name) }))
+let createTable(name, columns) = CreateTable(named(name), stored(columns(TableBuilder { table: named(name) })))
 
 # Drops a table for good: with no columns given, this cannot be rolled back.
 dropTable : Atom -> Operation
@@ -121,7 +121,7 @@ let dropTable(name) = DropTable(named(name), [])
 
 # Drops a table whose columns are stated, so a rollback can create it again.
 dropTable : Atom -> Block<TableBuilder, [Column]> -> Operation
-let dropTable(name, columns) = DropTable(named(name), columns(TableBuilder { table: named(name) }))
+let dropTable(name, columns) = DropTable(named(name), stored(columns(TableBuilder { table: named(name) })))
 
 # Adds one column: `addColumn(:users) do |t| t.text(:name, default: "") end`.
 addColumn : Atom -> Block<TableBuilder, Column> -> Operation
@@ -393,7 +393,7 @@ private do
       [] => Ok(names)
       [(name, plan) | rest] => match each(connection, plan) do
         Error(reason) => Error("rolling back \"${name}\" failed: ${reason}")
-        Ok(_) => match Harmat.Odbc.execute(connection, Harmat.Odbc.deleting(table(LEDGER), [Harmat.Schema.text("name").eqTo(name)])) do
+        Ok(_) => match Harmat.Odbc.execute(connection, Harmat.Odbc.deleting(table(LEDGER), [Harmat.Schema.text("name") == name])) do
           Error(reason) => Error(reason)
           Ok(_) => undone(connection, rest, names + [name])
         end
@@ -406,6 +406,10 @@ private do
 
   quotedNames : [Migration] -> String
   let quotedNames(steps) = steps.map { |step| "\"${step.name}\"" }.join(" and ")
+
+  # The lines of a table block that are columns: a `hasMany` is not one.
+  stored : [Column] -> [Column]
+  let stored(lines) = lines.filter { |line| Harmat.Column.stored?(line) }
 
   # What `changeColumn` holds when it was not given two columns.
   let unnamed = Column { label: "", storage: Characters }
