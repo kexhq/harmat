@@ -25,9 +25,9 @@ type Shade = Light | Dark | MidnightBlue
 
 describe("Harmat.Table") do
   it("lets in the constructors of a sum type, by their names in snake case") do
-    Assert.equal(Harmat.Column.choices(Type.of(Light)), ["light", "dark", "midnight_blue"])
+    Assert.equal(Harmat.Column.choices(Type.of(Shade)), ["light", "dark", "midnight_blue"])
     let themes = Table.define :themes do |t|
-      t.text(:shade, oneOf: Harmat.Column.choices(Type.named("Shade")))
+      t.text(:shade, oneOf: Harmat.Column.choices(Type.of(Shade)))
     end
     Assert.equal(themes.columns.first.map { |column| column.allowed }, Just(["light", "dark", "midnight_blue"]))
   end
@@ -231,10 +231,9 @@ describe("Harmat.Table") do
     end
     Assert.equal(Harmat.Table.drift([users], [createUsers, generous]), ["users.credit is declared differently from how it was migrated"])
     let mended = Migration.define :mend_credit, follows: :add_credit do
-      changeColumn(:users) do |t|
-        t.bigint(:credit, default: 100)
-        t.bigint(:credit, default: 0)
-      end
+      changeColumn(:users,
+        from: { |t| t.bigint(:credit, default: 100) },
+        to: { |t| t.bigint(:credit, default: 0) })
     end
     Assert.equal(Harmat.Table.drift([users], [createUsers, generous, mended]), [])
   end

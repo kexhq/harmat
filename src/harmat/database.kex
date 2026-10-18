@@ -26,30 +26,32 @@
 # finished and sent where it is written, answering rows and never anything
 # that queries again later:
 #
-#   Database.every(users)                     # every row
+#   Database.all(users)                       # every row
 #   Database.find(users, id)                  # the row of this primary key, or None
 #   Database.findBy(users, {email: email})    # the first row with these values
-#   Database.find(users, id, into: User { id: "" })   # either, as a record
+#   Database.find(users, id, as: User)        # either, as a record
 #   Database.select().from(users).by({owner: "ada"}).pluck(:email)   # one column
 #   Database.insertAll(users, [first, second])            # several rows
 #   Database.exists?(users, {email: email})               # whether any row has these
 #   Database.belongingTo(posts, users, ids)   # the posts of each of these users
 #
-# Any query can answer with records instead of rows, built by the fields of
-# a sample of the record — `.into(User { id: "" })`, `.firstInto(…)` — and
-# narrowed by a map of column to value as well as by conditions:
+# Any query can answer with records instead of rows, of the type it is
+# given — `.all(as: User)`, `.first(as: User)` — and be narrowed by a map
+# of column to value as well as by conditions:
 #
-#   Database.select().from(users).by({owner: "ada", credit: 5}).into(User { id: "" })
+#   Database.select().from(users).by({owner: "ada", credit: 5}).all(as: User)
 #
 # A field is filled from the column of its name in snake case —
 # `ownerId` from `owner_id`, `admin?` from `admin` — read as its type: text,
 # a number, a flag ("TRUE", "true", "t", "1" or "yes"), an option ("" is
 # `None`), a list of text (separated by commas), or a constructor of a sum
-# type (`Private` from "private"); a field whose type is an alias is read as
-# the sample's own value is. A field with no column of its name, or
-# whose column holds what its type cannot read, keeps the sample's value;
-# `renamed` maps a field to a column of another name. A constructor written
-# with `values`, `set` or `by` is stored by that same name.
+# type (`GroupChat` from "group_chat"). A field whose type is an alias is
+# read as text: Kex does not tell what an alias stands for at run time
+# (kexhq/kex#530). A field with no column of its name, or whose column holds
+# what its type cannot read, takes its declared default, and a record with
+# a required field left unfilled is an error. `renamed` maps a field to a
+# column of another name. A constructor written with `values`, `set` or
+# `by` is stored by that same name.
 #
 # `belongingTo` is a has-many loaded for many rows at once: the rows of one
 # table that refer to any of some keys of another, grouped by the key they
@@ -87,7 +89,7 @@ make Direct, implement: Harmat.Connection do
 
   # Runs `work` with this connection left open between its statements,
   # then keeps all of it or none. A transaction begun inside one joins it.
-  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
     return work() if Harmat.Database.ongoing().set?
 
     Harmat.Database.begun(@connection)
@@ -165,7 +167,7 @@ end
 foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
   let started = DateTime.epochNanos()
   Harmat.Logger.queried(Harmat.Odbc.plain("BEGIN"), 0, "")
-  let outcome = Harmat.Connection.atomically(work)
+  let outcome = Harmat.Connection.transaction(work)
   let ending = outcome.ok? then "COMMIT" else "ROLLBACK"
   Harmat.Logger.queried(Harmat.Odbc.plain(ending), (DateTime.epochNanos() - started) / 1000, "")
   return outcome
@@ -173,11 +175,11 @@ end
 
 # --- The everyday queries ---------------------------------------------------
 
-# Every row of a table. (`every`, not `all`: a function of this module
-# named like `Select`'s method `all` compiles to a call of a `$free`
-# function that is not there — as with a capability method,
-# kexhq/kex#492.)
-foul every(table: Definition) -> Result<[{String: String}], String> = select().from(table).all
+# Every row of a table.
+foul all(table: Definition) -> Result<[{String: String}], String> = select().from(table).all
+
+# The same, as records of type `as`.
+foul all(table: Definition, as: T) -> Result<[T], String> = select().from(table).all(as: as)
 
 # Inserts rows one after another, stopping at the first that fails: how
 # many went in, or why one did not. Inside a transaction, a failure undoes
@@ -200,8 +202,8 @@ end
 # The first row of a table with these values in these columns, or `None`.
 foul findBy(table: Definition, values: {Atom: Any}) -> Result<{String: String}?, String> = select().from(table).by(values).first
 
-# The same, as a record like `into`.
-foul findBy(table: Definition, values: {Atom: Any}, into: R) -> Result<R?, String> = select().from(table).by(values).firstInto(into)
+# The same, as a record of type `as`.
+foul findBy(table: Definition, values: {Atom: Any}, as: T) -> Result<T?, String> = select().from(table).by(values).first(as: as)
 
 # The row of a table whose primary key is `id`, or `None`.
 foul find(table: Definition, id: String) -> Result<{String: String}?, String> do
@@ -212,9 +214,9 @@ foul find(table: Definition, id: String) -> Result<{String: String}?, String> do
     .first
 end
 
-# The same, as a record like `into`.
-foul find(table: Definition, id: String, into: R) -> Result<R?, String> do
-  return find(table, id).map { |row| row.map { |found| decoded(found, into, {}) } }
+# The same, as a record of type `as`.
+foul find(table: Definition, id: String, as: T) -> Result<T?, String> do
+  return find(table, id).flatMap { |row| optionally(row, as, {}) }
 end
 
 # The rows of `owner` that refer to any of `keys` of `target`, by the key each
@@ -255,27 +257,64 @@ end
 
 # --- Records from rows ------------------------------------------------------
 
-# A record like `sample` with its fields filled from a row (see the top of
-# this module). Not a decoder written for each record: the record's own
-# fields say what to read, by its type as Kex knows it at run time.
-decoded : {String: String} -> R -> {String: String} -> R
-let decoded(row, sample, renamed) do
-  let parts : [Any] = BEAM.erlang.tuple_to_list(sample)
-  let fields = Type.of(sample).fields
-  let filled = fields.zip(parts.drop(1)).map { |pair|
-    match pair do
-      (field, kept) => do
-        let column = renamed.get(field.name).or(snaked(field.name))
-        match row.get(column) do
-          None => kept
-          Just(text) => read(text, field.valueType, kept)
-        end
-      end
+# A record of type `kind` with its fields filled from a row (see the top of
+# this module). Not a decoder written for each record: the type's own
+# fields say what to read, as Kex knows them at run time.
+decoded : {String: String} -> T -> {String: String} -> Result<T, String>
+let decoded(row, kind, renamed) do
+  let model = Type.of(kind)
+  let values = model.fields.reduce({}) { |found, field|
+    let column = renamed.get(field.name).or(snaked(field.name))
+    let value = row.get(column).flatMap { |text| read(text, field.valueType) }
+    match value do
+      Just(held) => found.put(field.name, held)
+      None => found
     end
   }
-  let built : R = BEAM.erlang.list_to_tuple([parts.first.or(:none)] + filled)
+  let built : Result<T, String> = model.construct(values)
   built
 end
+
+# Each row as a record of type `kind`, or the first reason one could not be.
+decodedAll : [{String: String}] -> T -> {String: String} -> Result<[T], String>
+let decodedAll(rows, kind, renamed) = rows.reduce(Ok([])) { |done, row|
+  done.flatMap { |records| decoded(row, kind, renamed).map { |built| records + [built] } }
+}
+
+# A row that may not be there as a record that may not be.
+optionally : {String: String}? -> T -> {String: String} -> Result<T?, String>
+let optionally(row, kind, renamed) do
+  match row do
+    None => Ok(None)
+    Just(found) => decoded(found, kind, renamed).map { |built| Just(built) }
+  end
+end
+
+# A column's text as a field's type, or `None` when it cannot be read as
+# one.
+read : String -> Type -> Any?
+let read(text, kind) do
+  let value : Any? = match kind.name do
+    "String" => Just(text)
+    "Integer" => text.trim.split(".").first.or("").to(Integer)
+    "Float" => text.trim.to(Float)
+    "Bool" => Just(TRUTHS.contains?(text.trim))
+    "Option" => text.empty? then Just(None) else read(text, kind.args.first.or(Type.named("String"))).map { |inner| Just(inner) }
+    "List" => Just(text.split(",").map { |part| part.trim }.reject { |part| part.empty? })
+    _ => kind.adt? then constructed(text, kind) else Just(text)
+  end
+  value
+end
+
+# What a flag column holds when it is set, in any database's spelling.
+let TRUTHS = ["TRUE", "true", "t", "1", "yes"]
+
+# The constructor of a sum type stored as `text`: `GroupChat` from
+# "group_chat".
+constructed : String -> Type -> Any?
+let constructed(text, kind) = kind.constructorNames
+  .find { |constructor| snaked(constructor) == text.trim }
+  .flatMap { |constructor| kind.variant(constructor).optional }
 
 # The conditions that a table's columns hold these values, each written as
 # its column stores it. A name the table does not declare matches no row.
@@ -388,16 +427,25 @@ make Select do
     return Select { ...this, columns: [name] }.all.map { |rows| rows.map { |row| row.get(name).or("") } }
   end
 
-  # Runs the query: every row, as a record like `sample` (see the top of
-  # this module for how a field is filled).
-  foul into(sample: R, renamed: {String: String} = {}) -> Result<[R], String> do
-    return this.all.map { |rows| rows.map { |row| Harmat.Database.decoded(row, sample, renamed) } }
+  # Runs the query: every row, as a record of type `as` (see the top of
+  # this module for how a field is filled). `renamed` maps a field to a
+  # column of another name.
+  #
+  # (Two of each, not a `renamed` that defaults to `{}`: a method named like
+  # another, called from another module without its defaulted argument, is
+  # a call to a function that is not there — kexhq/kex#531.)
+  foul all(as: T) -> Result<[T], String> = this.all(as: as, renamed: {})
+
+  foul all(as: T, renamed: {String: String}) -> Result<[T], String> do
+    return this.all.flatMap { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
   end
 
-  # Runs the query for one row, as a record like `sample`: the first, or
+  # Runs the query for one row, as a record of type `as`: the first, or
   # `None`.
-  foul firstInto(sample: R, renamed: {String: String} = {}) -> Result<R?, String> do
-    return this.first.map { |row| row.map { |found| Harmat.Database.decoded(found, sample, renamed) } }
+  foul first(as: T) -> Result<T?, String> = this.first(as: as, renamed: {})
+
+  foul first(as: T, renamed: {String: String}) -> Result<T?, String> do
+    return this.first.flatMap { |row| Harmat.Database.optionally(row, as, renamed) }
   end
 
   # Runs the query for how many rows match. The columns, order and limit
@@ -439,9 +487,8 @@ make Insert do
 
   # The row to insert, from a record: each of its fields into the column
   # of its name in snake case, where the table has one, and `extra` for the
-  # columns the record does not carry. (`valuesOf`, not `record`: that is a
-  # keyword — kexhq/kex#508.)
-  let valuesOf(value: Any, extra: {Atom: Any} = {}) -> Insert do
+  # columns the record does not carry.
+  let record(value: Any, extra: {Atom: Any} = {}) -> Insert do
     let fields = Harmat.Database.encoded(value)
       .entries
       .filter { |entry|
@@ -572,47 +619,14 @@ private do
 
   # A field's value as a row holds it.
   cell : Type -> Any -> Any
-  let cell(kind, held) = cellAs(kind.name, held)
-
-  cellAs : String -> Any -> Any
-  let cellAs("Option", None) = ""
-  let cellAs("Option", Just(inner)) = inner
-  let cellAs("List", items) = items.map { |item| "${item}" }.join(",")
-  let cellAs(name, held) = held
-
-  # A column's text read as a field's type; `kept` when it cannot be. One
-  # clause for each type, by its name: each answers a value of that type.
-  # (Clauses, not one `match`: arms of different types do not check into
-  # `Any` — kexhq/kex#506.)
-  read : String -> Type -> Any -> Any
-  let read(text, kind, kept) = readAs(kind.name, text, kind, kept)
-
-  readAs : String -> String -> Type -> Any -> Any
-  let readAs("String", text, kind, kept) = text
-  let readAs("Integer", text, kind, kept) = text.trim.split(".").first.or("").to(Integer).or(kept)
-  let readAs("Float", text, kind, kept) = text.trim.to(Float).or(kept)
-  let readAs("Bool", text, kind, kept) = ["TRUE", "true", "t", "1", "yes"].contains?(text.trim)
-  let readAs("Option", "", kind, kept) = None
-  let readAs("Option", text, kind, kept) = Just(read(text, kind.args.first.or(Type.named("String")), kept))
-  let readAs("List", text, kind, kept) = text.split(",").map { |part| part.trim }.reject { |part| part.empty? }
-  let readAs(name, text, kind, kept) do
-    return aliased(text, kept) if kind.constructorNames.empty?
-
-    kind.constructorNames
-      .find { |constructor| snaked(constructor) == text.trim }
-      .map { |constructor| BEAM.erlang.binary_to_existing_atom(constructor) }
-      .or(kept)
-  end
-
-  # A type Kex names by an alias — `type UserId = String` — is read as what
-  # the sample's own value is: text, a whole number, a flag.
-  aliased : String -> Any -> Any
-  let aliased(text, kept) do
-    return text if BEAM.erlang.is_binary(kept)
-    return readAs("Bool", text, Type.named("Bool"), kept) if kept == true || kept == false
-    return readAs("Integer", text, Type.named("Integer"), kept) if BEAM.erlang.is_integer(kept)
-    return readAs("Float", text, Type.named("Float"), kept) if BEAM.erlang.is_float(kept)
-    kept
+  let cell(kind, held) do
+    let value : Any = match (kind.name, held) do
+      ("Option", None) => ""
+      ("Option", Just(inner)) => inner
+      ("List", items) => items.map { |item| "${item}" }.join(",")
+      _ => held
+    end
+    value
   end
 
   # `Whole` is both a stored value in Harmat.Schema and a column's storage

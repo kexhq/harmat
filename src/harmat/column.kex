@@ -65,12 +65,7 @@ let named(word) do
 end
 
 make TableBuilder do
-  # Text of any length.
-  #
-  # `text`, not `string`: a make-block method named `string` that has
-  # defaulted parameters makes every other `.string` call in the program —
-  # the standard library's own included — compile to a call of the wrong
-  # arity (kexhq/kex#475). Rails has `t.text` too, and TEXT is what this is.
+  # Text of any length: TEXT, as Rails's `t.text`.
   let text(
     label: Atom,
     primaryKey: Bool = false,
@@ -209,14 +204,9 @@ let snaked(name) do
 end
 
 # The values a column of a sum type may hold: its constructors' names in
-# snake case, as Harmat writes and reads them. A type is not a value, so it
-# is given by its full name:
+# snake case, as Harmat writes and reads them:
 #
-#   t.text(:kind, oneOf: Harmat.Column.choices(Type.named("App.Models.Conversation.Kind")))
-#
-# (`Type.of(Channel)` answers the type only where `Channel` is declared;
-# imported, it answers the constructor itself, which has none —
-# kexhq/kex#505. A type is not a value: kexhq/kex#509.)
+#   t.text(:kind, oneOf: Harmat.Column.choices(Type.of(Kind)))
 choices : Type -> [String]
 let choices(kind) = kind.constructorNames.map { |name| snaked(name) }
 

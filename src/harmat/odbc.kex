@@ -21,7 +21,7 @@
 # the failure. `Statement` is the same shape as `Query` for that reason.
 module Harmat.Odbc
 
-using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, Value, Text, Whole]
+using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, AnyCond, AllCond, Value, Text, Whole]
 
 # SQL text with one `?` per bound value. Every value travels as text and the
 # statement casts it where the column is not statement: standard SQL, and the one
@@ -209,29 +209,43 @@ plain : String -> Statement
 let plain(sql) = Statement { statement: sql }
 
 private do
-  # A WHERE clause from Harmat conditions, or nothing.
+  # A WHERE clause from Harmat conditions, all of which have to hold, or
+  # nothing.
   filtering : [Cond] -> Statement
   let filtering(conditions) do
-    let clauses = conditions.map { |condition|
-      match condition do
-        EqCond(column, _) => "${column} = ?"
-        InCond(_, []) => "1 = 0"
-        InCond(column, values) => "${column} IN (${values.map { |_| "?" }.join(", ")})"
-        CmpCond(column, operator, value) => "${column} ${operator} ${hole(value)}"
-        NullCond(column) => "${column} IS NULL"
-      end
-    }
-    let values = conditions.flatMap { |condition|
-      match condition do
-        EqCond(_, value) => ["${value}"]
-        InCond(_, values) => values.map { |value| "${value}" }
-        CmpCond(_, _, value) => [bound(value)]
-        NullCond(_) => []
-      end
-    }
-    let clause = clauses.empty? then "" else " WHERE ${clauses.join(" AND ")}"
-    Statement { statement: clause, params: values }
+    let clauses = conditions.map { |condition| clause(condition, false) }
+    let values = conditions.flatMap { |condition| bindings(condition) }
+    let filter = clauses.empty? then "" else " WHERE ${clauses.join(" AND ")}"
+    Statement { statement: filter, params: values }
   end
+
+  # One condition as SQL, its values left as holes. `nested?` when it sits
+  # inside another, so a group of several is bracketed.
+  clause : Cond -> Bool -> String
+  let clause(EqCond(column, _), _) = "${column} = ?"
+  let clause(InCond(_, []), _) = "1 = 0"
+  let clause(InCond(column, values), _) = "${column} IN (${values.map { |_| "?" }.join(", ")})"
+  let clause(CmpCond(column, operator, value), _) = "${column} ${operator} ${hole(value)}"
+  let clause(NullCond(column), _) = "${column} IS NULL"
+  let clause(AnyCond([]), _) = "1 = 0"
+  let clause(AllCond([]), _) = "1 = 1"
+  let clause(AnyCond(parts), nested?) = grouped(parts, " OR ", nested?)
+  let clause(AllCond(parts), nested?) = grouped(parts, " AND ", nested?)
+
+  grouped : [Cond] -> String -> Bool -> String
+  let grouped(parts, joiner, nested?) do
+    let inner = parts.map { |part| clause(part, true) }.join(joiner)
+    parts.count > 1 || nested? then "(${inner})" else inner
+  end
+
+  # The values a condition binds, in the order of its holes.
+  bindings : Cond -> [String]
+  let bindings(EqCond(_, value)) = ["${value}"]
+  let bindings(InCond(_, values)) = values.map { |value| "${value}" }
+  let bindings(CmpCond(_, _, value)) = [bound(value)]
+  let bindings(NullCond(_)) = []
+  let bindings(AnyCond(parts)) = parts.flatMap { |part| bindings(part) }
+  let bindings(AllCond(parts)) = parts.flatMap { |part| bindings(part) }
 
   hole : Value -> String
   let hole(Text(_)) = "?"

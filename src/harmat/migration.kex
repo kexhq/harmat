@@ -43,10 +43,9 @@
 # A column is changed by saying what it was, then what it becomes:
 #
 #   let change = Migration.define :allow_owners, follows: :add_user_names do
-#     changeColumn(:users) do |t|
-#       t.text(:role, default: "member", oneOf: ["member", "admin"])
-#       t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
-#     end
+#     changeColumn(:users,
+#       from: { |t| t.text(:role, default: "member", oneOf: ["member", "admin"]) },
+#       to: { |t| t.text(:role, default: "member", oneOf: ["member", "admin", "owner"]) })
 #   end
 #
 # PostgreSQL alters the column in place. SQLite cannot alter a column at
@@ -133,18 +132,11 @@ removeColumn : Atom -> Block<TableBuilder, Column> -> Operation
 let removeColumn(name, column) = RemoveColumn(named(name), column(TableBuilder { table: named(name) }))
 
 # Changes one column — its type, default, whether it may be NULL, the values
-# it lets in. The block has two lines: the column as it was, then as it
-# becomes, each whole and of the same name, so a rollback can change it
-# back. Anything but two lines is refused when the migration runs.
-#
-# (One block, not `from:` and `to:` blocks: a block given as a named
-# argument cannot call `t.text` — kexhq/kex#499.)
-changeColumn : Atom -> Block<TableBuilder, [Column]> -> Operation
-let changeColumn(name, columns) do
-  match columns(TableBuilder { table: named(name) }) do
-    [prior, changed] => ChangeColumn(named(name), prior, changed)
-    _ => ChangeColumn(named(name), unnamed, unnamed)
-  end
+# it lets in: `from` is the column as it was, `to` as it becomes, each whole
+# and of the same name, so a rollback can change it back.
+let changeColumn(name: Atom, from: Block<TableBuilder, Column>, to: Block<TableBuilder, Column>) -> Operation do
+  let builder = TableBuilder { table: named(name) }
+  ChangeColumn(named(name), from(builder), to(builder))
 end
 
 # An index named `<table>_<columns>_index`; `unique: true` for a unique one.
@@ -194,12 +186,12 @@ let sqlOf(RemoveColumn(name, column), dialect) = "ALTER TABLE ${name} DROP COLUM
 let sqlOf(RemoveIndex(name, columns, unique?), dialect) = "DROP INDEX ${indexName(name, columns)}"
 # SQLite rebuilds the table, from what the database holds when it runs
 # (`planned`); here it is only said what the column becomes.
-let sqlOf(ChangeColumn(name, prior, changed), SQLite) do
-  "-- rebuild ${name} with ${Harmat.Column.columnSql(changed, SQLite)}"
+let sqlOf(ChangeColumn(name, before, after), SQLite) do
+  "-- rebuild ${name} with ${Harmat.Column.columnSql(after, SQLite)}"
 end
-let sqlOf(ChangeColumn(name, prior, changed), PostgreSQL) do
-  let actions = altered(name, prior, changed)
-  actions.empty? then "-- ${name}.${changed.label} is unchanged" else "ALTER TABLE ${name} ${actions.join(", ")}"
+let sqlOf(ChangeColumn(name, before, after), PostgreSQL) do
+  let actions = altered(name, before, after)
+  actions.empty? then "-- ${name}.${after.label} is unchanged" else "ALTER TABLE ${name} ${actions.join(", ")}"
 end
 let sqlOf(Execute(statement, undo), dialect) = statement
 
@@ -212,7 +204,7 @@ let reversed(AddColumn(name, column)) = Ok(RemoveColumn(name, column))
 let reversed(RemoveColumn(name, column)) = Ok(AddColumn(name, column))
 let reversed(AddIndex(name, columns, unique?)) = Ok(RemoveIndex(name, columns, unique?))
 let reversed(RemoveIndex(name, columns, unique?)) = Ok(AddIndex(name, columns, unique?))
-let reversed(ChangeColumn(name, prior, changed)) = Ok(ChangeColumn(name, changed, prior))
+let reversed(ChangeColumn(name, before, after)) = Ok(ChangeColumn(name, after, before))
 let reversed(Execute(statement, Just(undo))) = Ok(Execute(undo, Just(statement)))
 let reversed(Execute(statement, None)) = Error("execute was given no `undo:` statement for: ${statement}")
 
@@ -411,9 +403,6 @@ private do
   stored : [Column] -> [Column]
   let stored(lines) = lines.filter { |line| Harmat.Column.stored?(line) }
 
-  # What `changeColumn` holds when it was not given two columns.
-  let unnamed = Column { label: "", storage: Characters }
-
   indexName : String -> [String] -> String
   let indexName(name, columns) = "${name}_${columns.join("_")}_index"
 
@@ -481,14 +470,13 @@ private do
   # changes, on PostgreSQL; a rebuild of the table on SQLite.
   foul planned(connection: Any, dialect: Dialect, operation: Operation) -> Result<[String], String> do
     match operation do
-      ChangeColumn(name, prior, changed) => do
-        return Error("changeColumn on ${name} takes two columns: what it was, then what it becomes") if changed.label.empty?
-        return Error("changeColumn on ${name} names ${prior.label} and then ${changed.label}; it changes one column, not its name") if prior.label != changed.label
-        return Error("changeColumn cannot make ${name}.${changed.label} a primary key, or stop it being one") if prior.key? != changed.key?
+      ChangeColumn(name, before, after) => do
+        return Error("changeColumn on ${name} names ${before.label} and then ${after.label}; it changes one column, not its name") if before.label != after.label
+        return Error("changeColumn cannot make ${name}.${after.label} a primary key, or stop it being one") if before.key? != after.key?
 
         match dialect do
-          PostgreSQL => return Ok(altered(name, prior, changed).empty? then [] else [sqlOf(operation, dialect)])
-          SQLite => return rebuilding(connection, name, prior, changed)
+          PostgreSQL => return Ok(altered(name, before, after).empty? then [] else [sqlOf(operation, dialect)])
+          SQLite => return rebuilding(connection, name, before, after)
         end
       end
       _ => return Ok([sqlOf(operation, dialect)])
@@ -499,7 +487,7 @@ private do
   # it with that one column changed, its rows copied in, and its indexes.
   # SQLite keeps each table's CREATE TABLE, with what ADD COLUMN appended
   # to it, as it was run — so the column is there as Harmat wrote it.
-  foul rebuilding(connection: Any, name: String, prior: Column, changed: Column) -> Result<[String], String> do
+  foul rebuilding(connection: Any, name: String, before: Column, after: Column) -> Result<[String], String> do
     let tableSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${name}'")
     let indexSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '${name}' AND sql IS NOT NULL")
     let created = Harmat.Odbc.querying(connection, tableSql)
@@ -507,16 +495,16 @@ private do
       .try
     return Error("there is no table ${name} to change") if created.empty?
 
-    let was = Harmat.Column.columnSql(prior, SQLite)
+    let was = Harmat.Column.columnSql(before, SQLite)
     let pieces = created.split(was)
-    return Error("${name}.${prior.label} is not `${was}` in the database, so it cannot be changed from that") if pieces.count != 2
+    return Error("${name}.${before.label} is not `${was}` in the database, so it cannot be changed from that") if pieces.count != 2
 
     let columns = "(" + created.split("(").drop(1).join("(")
     let indexes = Harmat.Odbc.querying(connection, indexSql)
       .map { |rows| rows.map { |row| row.first.or("") } }
       .try
     let rebuilt = "harmat_rebuilt_${name}"
-    let becomes = Harmat.Column.columnSql(changed, SQLite)
+    let becomes = Harmat.Column.columnSql(after, SQLite)
     return Ok([
       "CREATE TABLE ${rebuilt} ${columns.replace(was, becomes)}",
       "INSERT INTO ${rebuilt} SELECT * FROM ${name}",
@@ -529,26 +517,26 @@ private do
   # none when nothing changes. A CHECK on a column is named
   # `<table>_<column>_check` by PostgreSQL when the column is made.
   altered : String -> Column -> Column -> [String]
-  let altered(name, prior, changed) do
-    let column = "ALTER COLUMN ${changed.label}"
-    let constraint = "${name}_${changed.label}_check"
-    let typeSql = Harmat.Column.typeSql(changed.storage)
-    let retyped = prior.storage == changed.storage then [] else ["${column} TYPE ${typeSql} USING ${changed.label}::${typeSql}"]
-    let nulls = match (prior.nullable?, changed.nullable?) do
+  let altered(name, before, after) do
+    let column = "ALTER COLUMN ${after.label}"
+    let constraint = "${name}_${after.label}_check"
+    let typeSql = Harmat.Column.typeSql(after.storage)
+    let retyped = before.storage == after.storage then [] else ["${column} TYPE ${typeSql} USING ${after.label}::${typeSql}"]
+    let nulls = match (before.nullable?, after.nullable?) do
       (false, true) => ["${column} DROP NOT NULL"]
       (true, false) => ["${column} SET NOT NULL"]
       _ => []
     end
-    let defaults = match (prior.fallback == changed.fallback, changed.fallback) do
+    let defaults = match (before.fallback == after.fallback, after.fallback) do
       (true, _) => []
       (false, Just(text)) => ["${column} SET DEFAULT ${text}"]
       (false, None) => ["${column} DROP DEFAULT"]
     end
-    let checks = if prior.allowed == changed.allowed
+    let checks = if before.allowed == after.allowed
       []
     else
-      let dropped = prior.allowed.empty? then [] else ["DROP CONSTRAINT ${constraint}"]
-      let added = changed.allowed.empty? then [] else ["ADD CONSTRAINT ${constraint} ${Harmat.Column.checkSql(changed)}"]
+      let dropped = before.allowed.empty? then [] else ["DROP CONSTRAINT ${constraint}"]
+      let added = after.allowed.empty? then [] else ["ADD CONSTRAINT ${constraint} ${Harmat.Column.checkSql(after)}"]
       dropped + added
     end
     retyped + nulls + defaults + checks

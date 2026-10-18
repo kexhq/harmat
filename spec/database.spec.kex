@@ -4,6 +4,10 @@ using Harmat.Table, only: [Definition]
 using Harmat.Database, as: Database
 using Harmat.Database, only: [Direct]
 using Harmat.Confined, only: [Confined]
+# Without this, `owner == "a" || owner == "b"` is a Bool here: a column
+# from `users.textColumn(…)` doesn't bring Harmat.Schema's `||` along
+# (kexhq/kex#532).
+using Harmat.Schema, only: [Cond]
 
 let users = Table.define :users do |t|
   t.text(:id, primaryKey: true)
@@ -58,7 +62,7 @@ make Echoing, implement: Harmat.Connection do
   end
 
   # Runs the work as it is: an echo has nothing to keep or undo.
-  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
     return work()
   end
 end
@@ -114,9 +118,20 @@ describe("Harmat.Database statements") do
     end
   end
 
+  it("joins conditions with || and &&, && binding tighter") do
+    with Harmat.Connection = Echoing {} do
+      Assert.equal(Database.select([:id]).from(users).where(owner == "ada" || credit > 100).all,
+                   Error("SELECT id FROM users WHERE (owner = ? OR credit > CAST(? AS BIGINT)) [ada, 100]"))
+      Assert.equal(Database.select([:id]).from(users).where(owner == "ada" || owner == "bob" && credit > 5).where(email != "").all,
+                   Error("SELECT id FROM users WHERE (owner = ? OR (owner = ? AND credit > CAST(? AS BIGINT))) AND email <> ? [ada, bob, 5, ]"))
+      Assert.equal(Database.select([:id]).from(users).where(owner == "a" || owner == "b" || owner == "c").all,
+                   Error("SELECT id FROM users WHERE (owner = ? OR owner = ? OR owner = ?) [a, b, c]"))
+    end
+  end
+
   it("spells the everyday queries short: every row, one by its key, and a has-many for many rows") do
     with Harmat.Connection = Echoing {} do
-      Assert.equal(Database.every(users), Error("SELECT id, email, owner, credit FROM users []"))
+      Assert.equal(Database.all(users), Error("SELECT id, email, owner, credit FROM users []"))
       Assert.equal(Database.find(users, "u1"), Error("SELECT id, email, owner, credit FROM users WHERE id = ? LIMIT 1 [u1]"))
       Assert.equal(
         Database.belongingTo(posts, users, ["u1", "u2", "u1"], via: :author_id, orderBy: [:title]),
@@ -143,7 +158,7 @@ describe("Harmat.Database statements") do
       )
       Assert.equal(Database.findBy(users, {email: "a@b.co"}), Error("SELECT id, email, owner, credit FROM users WHERE email = ? LIMIT 1 [a@b.co]"))
       Assert.equal(
-        Database.insert(users).valuesOf(Account { id: "u9", email: "e", credit: 2, standing: GroupAdmin }, extra: {owner: GroupAdmin}).run,
+        Database.insert(users).record(Account { id: "u9", email: "e", credit: 2, standing: GroupAdmin }, extra: {owner: GroupAdmin}).run,
         Error("INSERT INTO users (credit, email, id, owner) VALUES (CAST(? AS BIGINT), ?, ?, ?) [2, e, u9, group_admin]")
       )
       # A constructor is written by its name in snake case.
@@ -166,9 +181,7 @@ describe("Harmat.Database statements") do
       "tags": "a, b,,c",
       "display": "Ada"
     }
-    let sample = Account { id: "" }
-    let account : Account = Harmat.Database.decoded(row, sample, {"shown": "display"})
-    Assert.equal(account, Account {
+    Assert.equal(Harmat.Database.decoded(row, Account, {"shown": "display"}), Ok(Account {
       id: "u1",
       email: "ada@example.com",
       credit: 90000000000,
@@ -177,10 +190,14 @@ describe("Harmat.Database statements") do
       nickname: None,
       tags: ["a", "b", "c"],
       shown: "Ada"
-    })
-    # What a column does not say, or cannot, the sample keeps.
-    let sparse : Account = Harmat.Database.decoded({"id": "u2", "credit": "lots", "standing": "king", "nickname": "Al"}, sample, {})
-    Assert.equal(sparse, Account { id: "u2", nickname: Just("Al") })
+    }))
+    # What a column does not say, or cannot, the field's default stands for.
+    Assert.equal(
+      Harmat.Database.decoded({"id": "u2", "credit": "lots", "standing": "king", "nickname": "Al"}, Account, {}),
+      Ok(Account { id: "u2", nickname: Just("Al") })
+    )
+    # A required field no column fills is an error, not a record.
+    Assert.truthy(Harmat.Database.decoded({"email": "a@b.co"}, Account, {}).error?)
   end
 
   it("counts rows, in all or for each value of a column") do
@@ -301,16 +318,17 @@ describe("Harmat.Database against a database") do
                      .countBy(:email),
                    Ok({"bob@example.com": 1}))
 
-      Assert.equal(Database.every(users).map { |rows| rows.count }, Ok(2))
+      Assert.equal(Database.all(users).map { |rows| rows.count }, Ok(2))
+      Assert.equal(Database.all(users, as: Account).map { |accounts| accounts.map(&.id) }, Ok(["u2", "u3"]))
       Assert.equal(Database.find(users, "u3").map { |row| row.map { |found| found.get("email").or("") } }, Ok(Just("eve@example.com")))
       Assert.equal(Database.find(users, "nobody"), Ok(None))
       Assert.equal(Database.findBy(users, {owner: "bob", credit: 7}).map { |row| row.map { |found| found.get("id").or("") } }, Ok(Just("u3")))
       Assert.equal(
-        Database.select().from(users).by({owner: "bob"}).orderBy([:id]).into(Account { id: "" }).map { |found| found.map { |account| "${account.id} ${account.credit}" } },
+        Database.select().from(users).by({owner: "bob"}).orderBy([:id]).all(as: Account).map { |found| found.map { |account| "${account.id} ${account.credit}" } },
         Ok(["u2 0", "u3 7"])
       )
-      Assert.equal(Database.select().from(users).by({id: "u3"}).firstInto(Account { id: "" }).map { |found| found.map { |account| account.email } }, Ok(Just("eve@example.com")))
-      Assert.equal(Database.find(users, "u3", into: Account { id: "" }).map { |found| found.map { |account| account.credit } }, Ok(Just(7)))
+      Assert.equal(Database.select().from(users).by({id: "u3"}).first(as: Account).map { |found| found.map { |account| account.email } }, Ok(Just("eve@example.com")))
+      Assert.equal(Database.find(users, "u3", as: Account).map { |found| found.map { |account| account.credit } }, Ok(Just(7)))
       Assert.equal(Database.select().from(users).by({owner: "bob"}).orderBy([:id]).pluck(:email), Ok(["bob@example.com", "eve@example.com"]))
       Assert.equal(Database.exists?(users, {owner: "bob"}), Ok(true))
       Assert.equal(Database.exists?(users, {owner: "nobody"}), Ok(false))
@@ -319,9 +337,9 @@ describe("Harmat.Database against a database") do
       Assert.equal(Database.find(users, "u7").map { |found| found.set? }, Ok(true))
       # A record goes in field by field; what the table has no column for is left out.
       let ada = Account { id: "u4", email: "ada@example.com", credit: 3, standing: Owner, tags: ["x"] }
-      Assert.equal(Database.insert(users).valuesOf(ada, extra: {owner: "ada"}).run, Ok(1))
-      Assert.equal(Database.find(users, "u4", into: Account { id: "" }).map { |found| found.map { |account| "${account.email} ${account.credit} ${account.owner}" } }, Ok(Just("ada@example.com 3 ada")))
-      Assert.equal(Database.findBy(users, {email: "eve@example.com"}, into: Account { id: "" }).map { |found| found.map { |account| account.id } }, Ok(Just("u3")))
+      Assert.equal(Database.insert(users).record(ada, extra: {owner: "ada"}).run, Ok(1))
+      Assert.equal(Database.find(users, "u4", as: Account).map { |found| found.map { |account| "${account.email} ${account.credit} ${account.owner}" } }, Ok(Just("ada@example.com 3 ada")))
+      Assert.equal(Database.findBy(users, {email: "eve@example.com"}, as: Account).map { |found| found.map { |account| account.id } }, Ok(Just("u3")))
 
       # Each user's posts, in one query, by the user they belong to.
       Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE posts (id TEXT PRIMARY KEY, author_id TEXT NOT NULL, editor_id TEXT NOT NULL, title TEXT NOT NULL)")).try

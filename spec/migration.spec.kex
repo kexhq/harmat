@@ -33,10 +33,9 @@ let addIndexes = Migration.define :add_indexes, follows: :add_names do
 end
 
 let allowOwners = Migration.define :allow_owners, follows: :add_indexes do
-  changeColumn(:users) do |t|
-    t.text(:role, default: "member", oneOf: ["member", "admin"])
-    t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
-  end
+  changeColumn(:users,
+    from: { |t| t.text(:role, default: "member", oneOf: ["member", "admin"]) },
+    to: { |t| t.text(:role, default: "member", oneOf: ["member", "admin", "owner"]) })
 end
 
 let names(steps: [Harmat.Migration.Migration]) -> [String] = steps.map { |step| step.name }
@@ -101,10 +100,9 @@ describe("Harmat.Migration changeColumn") do
       "ALTER TABLE users DROP CONSTRAINT users_role_check, ADD CONSTRAINT users_role_check CHECK (role IN ('member', 'admin'))"
     ]))
     let loosened = Migration.define :loosen, follows: :add_indexes do
-      changeColumn(:users) do |t|
-        t.bigint(:credit, default: 0)
-        t.text(:credit, nullable: true)
-      end
+      changeColumn(:users,
+        from: { |t| t.bigint(:credit, default: 0) },
+        to: { |t| t.text(:credit, nullable: true) })
     end
     Assert.equal(Harmat.Migration.statements(loosened, PostgreSQL), [
       "ALTER TABLE users ALTER COLUMN credit TYPE TEXT USING credit::TEXT, ALTER COLUMN credit DROP NOT NULL, ALTER COLUMN credit DROP DEFAULT"

@@ -14,6 +14,15 @@
 # fails the build. Two columns are not compared by them: that is
 # record equality, as it would be without them.
 #
+# Conditions join with `||` and `&&`, `&&` binding tighter, as
+# in SQL:
+#
+#   .where(Users.owner == "ada" || Users.credit > 100)
+#
+# Both sides are always part of the condition: nothing is
+# short-circuited, because nothing is decided until the database
+# runs it.
+#
 # Nullable kinds also offer isNull. There is deliberately no way
 # to spell `= NULL`: Kex None == None is true, SQL NULL = NULL is
 # unknown, so the builder never renders one.
@@ -41,11 +50,13 @@ module Harmat.Schema do
 
   # One WHERE fragment: an equality with a bound value, membership in a list
   # of bound values, a comparison with one — `<>`, `>`, `>=`, `<` or `<=` —
-  # or IS NULL.
+  # IS NULL, or conditions of which any one, or all, hold.
   type Cond = EqCond(String, Any)
     | InCond(String, [Any])
     | CmpCond(String, String, Value)
     | NullCond(String)
+    | AnyCond([Cond])
+    | AllCond([Cond])
 
   # One value headed for a column in an INSERT or UPDATE.
   type Value = Text(String) | Whole(Integer)
@@ -64,6 +75,22 @@ module Harmat.Schema do
 
   table : String -> Table
   let table(name: String) -> Harmat.Schema.Table = Table { label: name }
+
+  make Cond do
+    let ||(other: Harmat.Schema.Cond) -> Harmat.Schema.Cond = AnyCond(Harmat.Schema.parts(this, other, true))
+
+    let &&(other: Harmat.Schema.Cond) -> Harmat.Schema.Cond = AllCond(Harmat.Schema.parts(this, other, false))
+  end
+
+  # Both sides of an `||` (`any?`) or `&&`, with a side that is already one
+  # of the same kind opened up: `a || b || c` is one `AnyCond` of three.
+  parts : Cond -> Cond -> Bool -> [Cond]
+  let parts(left, right, any?) = joined(left, any?) + joined(right, any?)
+
+  joined : Cond -> Bool -> [Cond]
+  let joined(AnyCond(inner), true) = inner
+  let joined(AllCond(inner), false) = inner
+  let joined(condition, _) = [condition]
 
   # `storing` is the write-side twin of `==`: the column paired with a
   # value of its own type, for `Harmat.Odbc.inserting` and `updating`.

@@ -8,7 +8,7 @@
 # the text is still baked. `--collapse-report` shows what went.
 
 module Harmat.Query do
-  using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, Text, Whole]
+  using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, AnyCond, AllCond, Text, Whole]
 
   # The finished product: static text plus bound values.
   #
@@ -31,6 +31,31 @@ module Harmat.Query do
   end
 
   compiled do
+    # One condition as SQL and the values it binds. `nested?` when it sits
+    # inside another, so a group of several is bracketed.
+    let condSql(c: Harmat.Schema.Cond, nested?: Bool) -> (String, [Any]) do
+      match c do
+        EqCond(col, val) => ("${col} = ?", [val])
+        InCond(col, []) => ("1 = 0", [])
+        InCond(col, vals) => ("${col} IN (${vals.map { |_| "?" }.join(", ")})", vals)
+        CmpCond(col, operator, Text(text)) => ("${col} ${operator} ?", [text])
+        CmpCond(col, operator, Whole(number)) => ("${col} ${operator} ?", [number])
+        NullCond(col) => ("${col} IS NULL", [])
+        AnyCond([]) => ("1 = 0", [])
+        AllCond([]) => ("1 = 1", [])
+        AnyCond(parts) => Harmat.Query.groupSql(parts, " OR ", nested?)
+        AllCond(parts) => Harmat.Query.groupSql(parts, " AND ", nested?)
+      end
+    end
+
+    let groupSql(parts: [Harmat.Schema.Cond], joiner: String, nested?: Bool) -> (String, [Any]) do
+      let pieces = parts.map { |part| Harmat.Query.condSql(part, true) }
+      let inner = pieces.map { |piece| match piece do (text, _) => text end }.join(joiner)
+      let bound = pieces.flatMap { |piece| match piece do (_, vals) => vals end }
+      let text = parts.count > 1 || nested? then "(${inner})" else inner
+      (text, bound)
+    end
+
     let select(fields: [String]) -> Harmat.Query.Builder do
       Builder { fields: fields }
     end
@@ -82,36 +107,10 @@ module Harmat.Query do
 
         @conditions.each do |c|
           let prefix = first then " WHERE " else " AND "
-          match c do
-            EqCond(col, val) => do
-              sql = sql + "${prefix}${col} = ?"
-              params = params + [val]
-              first = false
-            end
-            InCond(col, []) => do
-              sql = sql + "${prefix}1 = 0"
-              first = false
-            end
-            InCond(col, vals) => do
-              sql = sql + "${prefix}${col} IN (${vals.map { |_| "?" }.join(", ")})"
-              params = params + vals
-              first = false
-            end
-            CmpCond(col, operator, Text(text)) => do
-              sql = sql + "${prefix}${col} ${operator} ?"
-              params = params + [text]
-              first = false
-            end
-            CmpCond(col, operator, Whole(number)) => do
-              sql = sql + "${prefix}${col} ${operator} ?"
-              params = params + [number]
-              first = false
-            end
-            NullCond(col) => do
-              sql = sql + "${prefix}${col} IS NULL"
-              first = false
-            end
-          end
+          let (part, bound) = Harmat.Query.condSql(c, false)
+          sql = sql + "${prefix}${part}"
+          params = params + bound
+          first = false
         end
 
         match @order do

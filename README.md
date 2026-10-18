@@ -84,6 +84,19 @@ A comparison of a column with a value builds a condition for a `WHERE`:
 `==`, `!=`, `<`, `<=`, `>` and `>=`, each taking a value of the column's own
 type. Comparing two columns is record equality, as it would be without them.
 
+Conditions join with `||` and `&&`, `&&` binding tighter, as in SQL; several
+`where`s all have to hold:
+
+```kex
+.where(owner == "ada" || credit > 100)
+.where(owner == "ada" || owner == "bob" && credit > 5)
+```
+
+Both sides are always part of the condition: nothing is short-circuited.
+(A file that only gets its columns from a table's `textColumn` may need
+`using Harmat.Schema, only: [Cond]` for `||` to be the condition's —
+kexhq/kex#532.)
+
 ### What a table is for, and what it belongs to
 
 A table and its columns can say what they are for, a `belongsTo` is a column
@@ -189,7 +202,7 @@ Each of these is still exactly one query, sent where it is written, and
 never something that queries again later:
 
 ```kex
-Database.every(users)                                   # every row
+Database.all(users)                                     # every row
 Database.find(users, "u1")                              # the row with this primary key, or None
 Database.findBy(users, {email: address})                # the first row with these values
 Database.exists?(users, {email: address})               # whether there is one
@@ -203,30 +216,34 @@ written the way its column stores it, so the plain equalities need no
 `where`. `belongingTo` gives back the rows of `posts` that refer to any of
 `ids`, grouped by the key each refers to, in one `IN` query; the column is
 the one `posts` declares, and `via:` picks one by name or column when
-several refer to the same table. (It is `every`, not `all`, while a module
-function named like `Select`'s method `all` is not found.)
+several refer to the same table.
 
 ### Records instead of rows
 
-A query answers with records when it is given a sample of one:
+A query answers with records when it is given their type:
 
 ```kex
-Database.select().from(users).by({owner: "ada"}).into(User { id: "" })
-Database.find(users, id, into: User { id: "" })
-Database.insert(users).valuesOf(user, extra: {created_at: now}).run
+Database.select().from(users).by({owner: "ada"}).all(as: User)   # Result<[User], String>
+Database.select().from(users).where(email == address).first(as: User)
+Database.all(users, as: User)
+Database.find(users, id, as: User)
+Database.findBy(users, {email: address}, as: User)
+Database.insert(users).record(user, extra: {created_at: now}).run
 ```
 
 A field is filled from the column of its name in snake case — `ownerId` from
 `owner_id`, `admin?` from `admin` — read as its type: text, a number, a flag
 (`TRUE`, `true`, `t`, `1` or `yes`), an option (`""` is `None`), a list of text
 separated by commas, or a constructor of a sum type (`GroupChat` from
-`group_chat`). An alias of a type is read as the sample's own value is. What
-a row does not say, or cannot, the sample keeps; `renamed:` maps a field to a
-column of another name. `valuesOf` goes the other way: each field into the
-column of its name, where the table has one, and `extra:` for the rest. A
-constructor written anywhere — `values`, `set`, `by` — is stored by that same
-snake-case name, and `Harmat.Column.choices(Type.named("App.Models.Kind"))`
-lists them for a column's `oneOf:`, so the CHECK follows the type.
+`group_chat`). A field whose type is an alias is read as text, since Kex
+does not yet say what an alias stands for (kexhq/kex#530). What a row does
+not say, or cannot, the field's declared default stands for, and a required
+field left unfilled is an error; `renamed:` maps a field to a column of
+another name. `record` goes the other way: each field into the column of its
+name, where the table has one, and `extra:` for the rest. A constructor
+written anywhere — `values`, `set`, `by` — is stored by that same snake-case
+name, and `Harmat.Column.choices(Type.of(Kind))` lists them for a column's
+`oneOf:`, so the CHECK follows the type.
 
 There is no decoder to write per record: the record's own fields, as Kex
 knows them at run time, say what to read.
@@ -320,7 +337,7 @@ make StoreConnection, implement: Harmat.Connection do
     …   # SELECT: the rows, each as its cells in column order
   end
 
-  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> do
+  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
     …   # the owner runs `work` as one transaction (see Transactions)
   end
 end
@@ -362,8 +379,8 @@ A transaction belongs to the process running it, not to a capability: a
 block uses the `Harmat.Connection` in force where it was *written*, so its
 statements cannot be redirected by installing another connection around
 it. A connection that asks an owning process — like `StoreConnection`
-above — implements `atomically` by sending the owner the whole block, which
-runs it with `Direct { connection }.atomically(work)`; inside, its own `run`
+above — implements `transaction` by sending the owner the whole block, which
+runs it with `Direct { connection }.transaction(work)`; inside, its own `run`
 and `ask` see `Harmat.Database.ongoing()` and run on that connection
 directly instead of asking the owner, which is busy with the transaction.
 
@@ -395,7 +412,7 @@ end
 | `dropTable(:t)` | nothing: it cannot be rolled back |
 | `addColumn(:t) do \|t\| ... end` | removing the column |
 | `removeColumn(:t) do \|t\| ... end` | adding it back, as the block says it was |
-| `changeColumn(:t) do \|t\| ... end` | changing it back |
+| `changeColumn(:t, from: { \|t\| … }, to: { \|t\| … })` | changing it back |
 | `addIndex(:t, [:a, :b], unique: true)` | dropping the index |
 | `removeIndex(:t, [:a, :b])` | creating it again |
 | ``execute(sql`…`, undo: sql`…`)`` | running `undo:`; without one, nothing |
@@ -403,15 +420,14 @@ end
 `execute` runs a literal's text as written and binds no values: write them
 into the statement.
 
-`changeColumn` takes two lines: the column as it was, then as it becomes.
+`changeColumn` takes the column as it was, `from:`, and as it becomes, `to:`.
 That way it can change a column's type, its default, whether it may be
 NULL, or the values it lets in:
 
 ```kex
-changeColumn(:users) do |t|
-  t.text(:role, default: "member", oneOf: ["member", "admin"])
-  t.text(:role, default: "member", oneOf: ["member", "admin", "owner"])
-end
+changeColumn(:users,
+  from: { |t| t.text(:role, default: "member", oneOf: ["member", "admin"]) },
+  to: { |t| t.text(:role, default: "member", oneOf: ["member", "admin", "owner"]) })
 ```
 
 PostgreSQL alters the column in place. SQLite can't alter a column, so
@@ -479,12 +495,10 @@ rewritten.)
 
 ## What it does not do
 
-- A condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), `in` or
-  `isNull`. There is no `LIKE` or `OR` in the builder — Kex does not let
-  `&&` and `||` be overloaded, so several `where`s are AND — and no joins:
-  reach for `sql`.
-- Rows come back as maps of text, not as records. Turning one into a record
-  is the caller's (kexhq/kex#487). A `NULL` reads as `""`.
+- A condition is a comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`), `in`,
+  `isNull`, or several joined by `||` and `&&`. There is no `LIKE` and no
+  joins: reach for `sql`.
+- A `NULL` reads as `""`.
 - No savepoints: a transaction begun inside another joins it, and undoing
   the inner one undoes both.
 - Migrations are not run in a transaction: each statement commits.
@@ -499,7 +513,7 @@ rewritten.)
 | --- | --- |
 | `Harmat.Database` | the query builder: `select`, `insert`, `update`, `delete`, `within` |
 | `Harmat.Confined` | what `within` gives: statements that all carry a condition |
-| `Harmat.Connection` | the capability every statement is sent through; `atomically` for transactions |
+| `Harmat.Connection` | the capability every statement is sent through; `transaction` for transactions |
 | `Harmat.Logger`, `Harmat.Log` | told of every statement, timed; `Log.Console` prints them |
 | `Harmat.Table`, `Harmat.Column` | declaring tables and columns; `drift` |
 | `Harmat.Schema` | column handles and conditions |

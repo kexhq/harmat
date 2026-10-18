@@ -120,9 +120,7 @@ make Definition do
   names :> [String]
   let names = @columns.map { |column| column.label }
 
-  # A handle on a text column. (`textColumn`, not `text`: the table builder
-  # has a `text` with defaulted parameters, and two make-block methods of one
-  # name are confused by the compiler when one has defaults — kexhq/kex#475.)
+  # A handle on a text column, for conditions: `users.textColumn(:email)`.
   textColumn :> Atom -> TextColumn
   let textColumn(name) = Harmat.Schema.text(named(name))
 

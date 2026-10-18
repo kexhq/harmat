@@ -23,5 +23,5 @@ capability Harmat.Connection do
   # connection, with nothing else's in between; kept when it answers `Ok`,
   # undone when it answers `Error`. `Harmat.Database.transaction` is the
   # way in.
-  foul atomically(work: Block<Result<Any, String>>) -> Result<Any, String> = Error("no database connected")
+  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> = Error("no database connected")
 end

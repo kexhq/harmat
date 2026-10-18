@@ -23,13 +23,13 @@ module Harmat.Log do
     let paint = { |text, style| colored? then Console.colorize(text, style) else text }
     let verb = statement.statement.split(" ").first.or("").upperCase
     let shade = Console.BOLD + SHADES.get(verb).or(Console.MAGENTA)
-    let about = "${subjectOf(statement.statement)} (${elapsed(micros)})"
+    let about = "${table(statement.statement)} (${elapsed(micros)})"
     let named = paint(about, Console.BOLD + Console.CYAN)
     let sql = statement.statement
       .split(" ")
       .map { |word| keyword?(word) then paint(word, shade) else word }
       .join(" ")
-    let values = statement.params.empty? then "" else "  ${paint(valuesOf(statement.params), Console.DIM)}"
+    let values = statement.params.empty? then "" else "  ${paint(shown(statement.params), Console.DIM)}"
     "  ${named}  ${sql}${values}  ${paint(outcome, Console.DIM)}"
   end
 
@@ -59,9 +59,9 @@ module Harmat.Log do
     let keyword?(word) = KEYWORDS.contains?(word.split("(").first.or(""))
 
     # The table a statement is about: what follows FROM, INTO or UPDATE.
-    subjectOf : String -> String
+    table : String -> String
     # BEGIN, COMMIT and ROLLBACK are about the transaction, not a table.
-    let subjectOf(sql) do
+    let table(sql) do
       let words = sql.split(" ")
       return "TRANSACTION" if ["BEGIN", "COMMIT", "ROLLBACK"].contains?(words.first.or(""))
       tableIn(words)
@@ -79,8 +79,8 @@ module Harmat.Log do
     let elapsed(micros) = "${micros / 1000}.${micros % 1000 / 100}ms"
 
     # The values a statement was run with, a secret shown as [FILTERED].
-    valuesOf : [String] -> String
-    let valuesOf(params) do
+    shown : [String] -> String
+    let shown(params) do
       let quoted = params.map { |value| secret?(value) then "[FILTERED]" else "\"${value.take(120)}\"" }
       "[${quoted.join(", ")}]"
     end
