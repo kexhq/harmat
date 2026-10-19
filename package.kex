@@ -1,8 +1,8 @@
 package "harmat" do
-  version("0.1.0")
+  version("0.2.0")
   license("LGPL-3.0-or-later")
   description("A drizzle-like typed query builder for Kex")
-  kex(">= 0.4.0-rc.1")
+  kex(">= 0.4.0-rc.2")
 
   # Harmat's generators, as a Tey plugin: from an application that depends on
   # Harmat, `tey generate harmat:migration --name add_avatars --force` writes
