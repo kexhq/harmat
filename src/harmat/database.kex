@@ -168,9 +168,77 @@ foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
   let started = DateTime.epochNanos()
   Harmat.Logger.queried(Harmat.Odbc.plain("BEGIN"), 0, "")
   let outcome = Harmat.Connection.transaction(work)
+  # What was read inside it may be what a rollback took back.
+  forget()
   let ending = outcome.ok? then "COMMIT" else "ROLLBACK"
   Harmat.Logger.queried(Harmat.Odbc.plain(ending), (DateTime.epochNanos() - started) / 1000, "")
   return outcome
+end
+
+# --- The cache --------------------------------------------------------------
+
+# Runs `work` with each query in it sent once: asked again, with the same
+# SQL and the same values, it is answered with the rows it had the first
+# time. Any insert, update, delete or transaction empties the cache, so
+# nothing read after a change is from before it. The cache is the process's
+# and lasts as long as `work`: a request, or one event of a live page —
+# never a page's whole life. Begun inside another, it is that one.
+#
+#   Database.cache do
+#     page(request)
+#   end
+foul cache(work: Block<T>) -> T do
+  return work() if caching?()
+
+  BEAM.erlang.put(:harmat_cache, {})
+  let answer = trying do
+    work()
+  rescue
+    reason => do
+      BEAM.erlang.erase(:harmat_cache)
+      BEAM.erlang.error(reason)
+    end
+  end
+  BEAM.erlang.erase(:harmat_cache)
+  return answer
+end
+
+# Whether this process is inside `cache`.
+caching? : Bool
+foul caching? = BEAM.erlang.get(:harmat_cache) != :undefined
+
+# --- The tally --------------------------------------------------------------
+
+# What a process has asked of the database: how many statements it sent,
+# how many queries the cache answered instead, and how long the database
+# took, in microseconds. One taken before some work and one after say what
+# the work cost:
+#
+#   let before = Database.tally()
+#   page(request)
+#   Database.tally().since(before)   # => Tally { sent: 12, cached: 3, micros: 5100 }
+record Tally do
+  sent : Integer = 0
+  cached : Integer = 0
+  micros : Integer = 0
+end
+
+make Tally do
+  # What was asked between `earlier` and this one.
+  let since(earlier: Tally) -> Tally = Tally {
+    sent: @sent - earlier.sent,
+    cached: @cached - earlier.cached,
+    micros: @micros - earlier.micros
+  }
+end
+
+# Everything this process has asked so far.
+tally : Tally
+foul tally do
+  let held : Any = BEAM.erlang.get(:harmat_tally)
+  return Tally {} if held == :undefined
+  let found : Tally = held
+  return found
 end
 
 # --- The everyday queries ---------------------------------------------------
@@ -558,27 +626,83 @@ make Delete do
 end
 
 private do
-  # A SELECT, run and timed, and told to the logger (`Harmat.Logger`).
+  # A SELECT, run and timed, and told to the logger (`Harmat.Logger`) —
+  # or answered from the cache, and told as that.
   foul asked(statement: Statement) -> Result<[[String]], String> do
+    match lookup(statement) do
+      Just(found) => do
+        count(0, 1, 0)
+        Harmat.Logger.queried(statement, 0, "${counted(found)} (cache)")
+        return Ok(found)
+      end
+      None => ()
+    end
     let started = DateTime.epochNanos()
     let rows = Harmat.Connection.ask(statement)
     let outcome = match rows do
-      Ok(found) => found.count == 1 then "1 row" else "${found.count} rows"
+      Ok(found) => counted(found)
       Error(reason) => "failed: ${reason}"
     end
-    Harmat.Logger.queried(statement, (DateTime.epochNanos() - started) / 1000, outcome)
+    let micros = (DateTime.epochNanos() - started) / 1000
+    count(1, 0, micros)
+    Harmat.Logger.queried(statement, micros, outcome)
+    match rows do
+      Ok(found) => store(statement, found)
+      Error(_) => ()
+    end
     return rows
+  end
+
+  # Adds to this process's tally.
+  count : Integer -> Integer -> Integer -> Void
+  foul count(sent, cached, micros) do
+    let now = Harmat.Database.tally()
+    BEAM.erlang.put(:harmat_tally, Harmat.Database.Tally {
+      sent: now.sent + sent,
+      cached: now.cached + cached,
+      micros: now.micros + micros
+    })
+  end
+
+  # How many rows, in words.
+  counted : [[String]] -> String
+  let counted(rows) = rows.count == 1 then "1 row" else "${rows.count} rows"
+
+  # The rows a query had before, if this process is caching and it was
+  # asked.
+  lookup : Statement -> [[String]]?
+  foul lookup(statement) do
+    return None if !caching?()
+    let held : {Statement: [[String]]} = BEAM.erlang.get(:harmat_cache)
+    return held.get(statement)
+  end
+
+  # Keeps the rows a query had, if this process is caching.
+  store : Statement -> [[String]] -> Void
+  foul store(statement, rows) do
+    return if !caching?()
+    let held : {Statement: [[String]]} = BEAM.erlang.get(:harmat_cache)
+    BEAM.erlang.put(:harmat_cache, held.put(statement, rows))
+  end
+
+  # Empties the cache, if this process is caching: something has changed.
+  forget : Void
+  foul forget do
+    BEAM.erlang.put(:harmat_cache, {}) if caching?()
   end
 
   # A statement that changes rows, run and timed, and told to the logger.
   foul ran(statement: Statement) -> Result<Integer, String> do
     let started = DateTime.epochNanos()
+    forget()
     let changed = Harmat.Connection.run(statement)
     let outcome = match changed do
       Ok(count) => "${count} changed"
       Error(reason) => "failed: ${reason}"
     end
-    Harmat.Logger.queried(statement, (DateTime.epochNanos() - started) / 1000, outcome)
+    let micros = (DateTime.epochNanos() - started) / 1000
+    count(1, 0, micros)
+    Harmat.Logger.queried(statement, micros, outcome)
     return changed
   end
 

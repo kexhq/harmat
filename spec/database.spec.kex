@@ -409,4 +409,94 @@ describe("Harmat.Database against a database") do
     Assert.equal(Harmat.Odbc.query(other, Harmat.Odbc.plain("SELECT id FROM users")), Ok([["u1"]]))
     FS.File.delete(file)
   end
+
+  it("sends a query once inside cache, until something changes") do
+    let file = "harmat_cache_${BEAM.erlang.system_time(:millisecond)}.db"
+    Harmat.Odbc.sideload(".odbc")
+    let connection = Harmat.Odbc.connect(dsn(file)).try
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("DROP TABLE IF EXISTS users")).try
+    Harmat.Odbc.execute(connection, Harmat.Odbc.plain("CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, owner TEXT NOT NULL, credit BIGINT NOT NULL DEFAULT 0)")).try
+    BEAM.erlang.put(:told, [])
+    with Harmat.Connection = Direct { connection: connection } do
+      with Harmat.Logger = Telling {} do
+        let row = { |id| {id: id, email: "${id}@example.com", owner: "ada"} }
+        let ada = { Database.select([:id]).from(users).where(owner == "ada").orderBy([:id]).pluck(:id) }
+        Database.insert(users).values(row("u1")).run.try
+        told()
+
+        # Outside it, every query is sent.
+        ada()
+        ada()
+        Assert.equal(told(), ["1 row", "1 row"])
+
+        Database.cache do
+          let before = Database.tally()
+          Assert.equal(ada(), Ok(["u1"]))
+          Assert.equal(ada(), Ok(["u1"]))
+          Assert.equal(told(), ["1 row", "1 row (cache)"])
+          # The tally says so too: one sent, one from the cache.
+          let cost = Database.tally().since(before)
+          Assert.equal((cost.sent, cost.cached), (1, 1))
+
+          # A change empties it: what is read after is read again.
+          Database.insert(users).values(row("u2")).run.try
+          Assert.equal(ada(), Ok(["u1", "u2"]))
+          Assert.equal(told(), ["1 changed", "2 rows"])
+
+          # So does a transaction, kept or not.
+          Database.transaction do
+            Database.update(users).set({credit: 5}).where(id == "u1").run
+          end
+          ada()
+          Assert.equal(told(), ["", "1 changed", "", "2 rows"])
+
+          # A cache inside one is that one.
+          Database.cache do
+            ada()
+          end
+          Assert.equal(told(), ["2 rows (cache)"])
+          Assert.truthy(Database.caching?())
+        end
+        Assert.falsy(Database.caching?())
+
+        # A failure inside it does not leave the process caching.
+        trying do
+          Database.cache do
+            ada()
+            # Something raised, not an Error a block answers.
+            1 / ([1].count - 1)
+          end
+        rescue
+          reason => BEAM.erlang.put(:rescued, reason)
+        end
+        # It still reaches whoever was waiting for it.
+        Assert.truthy(BEAM.erlang.get(:rescued) != :undefined)
+        Assert.falsy(Database.caching?())
+        told()
+        ada()
+        ada()
+        Assert.equal(told(), ["2 rows", "2 rows"])
+      end
+    end
+    FS.File.delete(file)
+  end
+end
+
+# A logger that keeps how each statement went, for `told`.
+record Telling do
+  label : String = "telling"
+end
+
+make Telling, implement: Harmat.Logger do
+  foul queried(statement: Harmat.Odbc.Statement, micros: Integer, outcome: String) -> Void do
+    let held : [String] = BEAM.erlang.get(:told)
+    BEAM.erlang.put(:told, held + [outcome])
+  end
+end
+
+# How each statement went since the last time this was asked.
+foul told -> [String] do
+  let held : [String] = BEAM.erlang.get(:told)
+  BEAM.erlang.put(:told, [])
+  return held
 end
