@@ -30,7 +30,7 @@
 #   Database.find(users, id)                  # the row of this primary key, or None
 #   Database.findBy(users, {email: email})    # the first row with these values
 #   Database.find(users, id, as: User)        # either, as a record
-#   Database.select().from(users).by({owner: "ada"}).pluck(:email)   # one column
+#   Database.select([:email]).from(users).by({owner: "ada"}).all(as: String)
 #   Database.insertAll(users, [first, second])            # several rows
 #   Database.exists?(users, {email: email})               # whether any row has these
 #   Database.belongingTo(posts, users, ids)   # the posts of each of these users
@@ -404,6 +404,27 @@ let decodedAll(rows, kind, renamed) = rows.reduce(Ok([])) { |done, row|
   done.flatMap { |records| decoded(row, kind, renamed).map { |built| records + [built] } }
 }
 
+# A selected cell as its requested type. Used when a query projects one
+# column to a value instead of a record.
+selected : {String: String} -> String -> T -> Result<T, String>
+let selected(row, column, as) do
+  let kind = Type.of(as)
+  match row.get(column) do
+    None => return Error("Selected column ${column} was not returned")
+    Just(text) => match read(text, kind).flatMap { |value| value.to(as) } do
+      Just(value) => Ok(value)
+      None => Error("Could not read ${column} as ${kind.showValue}: \"${text}\"")
+    end
+  end
+end
+
+# Every projected cell as its requested type, or the first one that cannot
+# be read.
+selectedAll : [{String: String}] -> String -> T -> Result<[T], String>
+let selectedAll(rows, column, as) = rows.reduce(Ok([])) { |done, row|
+  done.flatMap { |values| selected(row, column, as).map { |value| values + [value] } }
+}
+
 # A row that may not be there as a record that may not be.
 optionally : {String: String}? -> T -> {String: String} -> Result<T?, String>
 let optionally(row, kind, renamed) do
@@ -628,13 +649,6 @@ make Select do
   # Runs the query for one row: the first, or `None`.
   foul first -> Result<{String: String}?, String> = this.rows(@builtFirst).map { |rows| rows.first }
 
-  # Runs the query for one column: its value in every row.
-  foul pluck(column: Atom) -> Result<[String], String> do
-    let name = named(column)
-    let only = Select { ...this, columns: [name] }
-    return only.rows(only.statement).map { |rows| rows.map { |row| row.get(name).or("") } }
-  end
-
   # Runs one of the statements this query is, each row as a map from column
   # name to text.
   foul rows(chosen: Result<Statement, String>) -> Result<[{String: String}], String> do
@@ -648,7 +662,8 @@ make Select do
   end
 
   # Runs the query: every row, as a record of type `as` (see the top of
-  # this module for how a field is filled). `renamed` maps a field to a
+  # this module for how a field is filled), or as a selected value when
+  # exactly one column was selected. `renamed` maps a record field to a
   # column of another name.
   #
   # (Two of each, not a `renamed` that defaults to `{}`: a method named like
@@ -657,7 +672,13 @@ make Select do
   foul all(as: T) -> Result<[T], String> = this.all(as: as, renamed: {})
 
   foul all(as: T, renamed: {String: String}) -> Result<[T], String> do
-    return this.all.flatMap { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
+    let kind = Type.of(as)
+    if kind.record?
+      return this.all.flatMap { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
+    end
+    return Error("Selecting a value needs exactly one column") if @columns.count != 1
+    let column = @columns.first.or("")
+    this.all.flatMap { |rows| Harmat.Database.selectedAll(rows, column, as) }
   end
 
   # Runs the query for one row, as a record of type `as`: the first, or
@@ -665,7 +686,18 @@ make Select do
   foul first(as: T) -> Result<T?, String> = this.first(as: as, renamed: {})
 
   foul first(as: T, renamed: {String: String}) -> Result<T?, String> do
-    return this.first.flatMap { |row| Harmat.Database.optionally(row, as, renamed) }
+    let kind = Type.of(as)
+    if kind.record?
+      return this.first.flatMap { |row| Harmat.Database.optionally(row, as, renamed) }
+    end
+    return Error("Selecting a value needs exactly one column") if @columns.count != 1
+    let column = @columns.first.or("")
+    this.first.flatMap do |row|
+      match row do
+        None => Ok(None)
+        Just(found) => Harmat.Database.selected(found, column, as).map { |value| Just(value) }
+      end
+    end
   end
 
   # Runs the query for how many rows match. The columns, order and limit
