@@ -423,7 +423,13 @@ let read(text, kind) do
     "Float" => text.trim.to(Float)
     "Bool" => Just(TRUTHS.contains?(text.trim))
     "Option" => text.empty? then Just(None) else read(text, kind.args.first.or(Type.named("String"))).map { |inner| Just(inner) }
-    "List" => Just(text.split(",").map { |part| part.trim }.reject { |part| part.empty? })
+    "List" => do
+      let itemType = kind.args.first.or(Type.named("String"))
+      let parts = text.split(",").map { |part| part.trim }.reject { |part| part.empty? }
+      let values = parts.map { |part| read(part, itemType) }
+      return None if values.any? { |value| !value.set? }
+      Just(values.flatMap { |value| value.map { |item| [item] }.or([]) })
+    end
     _ => kind.adt? then constructed(text, kind) else Just(text)
   end
   value
@@ -947,7 +953,10 @@ private do
     let value : Any = match (kind.name, held) do
       ("Option", None) => ""
       ("Option", Just(inner)) => inner
-      ("List", items) => items.map { |item| "${item}" }.join(",")
+      ("List", items) => do
+        let itemType = kind.args.first.or(Type.named("String"))
+        items.map { |item| itemType.adt? then spelled(item) else "${item}" }.join(",")
+      end
       _ => held
     end
     value
