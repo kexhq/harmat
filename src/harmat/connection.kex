@@ -16,6 +16,9 @@ capability Harmat.Connection do
   # Runs a statement that changes rows; how many it changed.
   foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> = Error("no database connected")
 
+  # Runs one parameterized statement for several rows of values.
+  foul runMany(statement: Harmat.Odbc.Statement) -> Result<Integer, String> = Error("no database connected")
+
   # Runs a SELECT; its rows, each as its cells in column order.
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> = Error("no database connected")
 

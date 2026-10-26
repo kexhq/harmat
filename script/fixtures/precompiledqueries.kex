@@ -1,0 +1,51 @@
+# The schema remains an ordinary function, also usable at runtime. Only the
+# query recipe is compiled; its result is SQL and parameters, not a schema.
+using Harmat.Database, as: Database
+using Harmat.Table, as: Table
+using Harmat.Odbc, only: [Statement]
+
+let users() -> Harmat.Table.Definition do
+  Table.define :users do |t|
+    t.text(:id, primaryKey: true)
+    t.text(:email)
+  end
+end
+
+compiled do
+  let lookup(userId: String) -> Statement do
+    Database.select([:id, :email]).from(users())
+      .where(users().textColumn(:id) == userId).statement
+      .or(Statement { statement: "invalid" })
+  end
+
+  let limited(userId: String, cap: Integer) -> Statement do
+    Database.select([:id, :email]).from(users())
+      .where(users().textColumn(:id) == userId).limit(cap).statement
+      .or(Statement { statement: "invalid" })
+  end
+
+  let deleting(userId: String) -> Harmat.Database.Delete do
+    Database.delete(users()).where(users().textColumn(:id) == userId)
+  end
+
+end
+
+# The acceptance script inspects these functions in generated Core Erlang.
+# Their arguments are unknown to the compiler, even when main uses literals.
+let query(userId: String) -> Statement = lookup(userId)
+let dynamicQuery(userId: String, cap: Integer) -> Statement = limited(userId, cap)
+let deleteQuery(userId: String) -> Harmat.Database.Delete = deleting(userId)
+
+main do
+  let first = query("ada")
+  let second = query("bob")
+  IO.printLine(first.statement)
+  IO.printLine(first.params)
+  IO.printLine(second.statement)
+  IO.printLine(second.params)
+  IO.printLine(dynamicQuery("ada", 2).statement)
+  IO.printLine(dynamicQuery("bob", 7).statement)
+  let deleted = deleteQuery("ada").built.or(Statement { statement: "invalid" })
+  IO.printLine(deleted.statement)
+  IO.printLine(deleted.params)
+end

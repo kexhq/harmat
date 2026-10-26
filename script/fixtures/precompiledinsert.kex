@@ -1,0 +1,59 @@
+# A fixed INSERT shape with one text and one integer runtime parameter.
+using Harmat.Database, as: Database
+using Harmat.Table, as: Table
+using Harmat.Odbc, only: [Statement]
+
+let users() -> Harmat.Table.Definition do
+  Table.define :users do |t|
+    t.text(:id, primaryKey: true)
+    t.bigint(:seen_at)
+  end
+end
+
+compiled do
+  let inserting(userId: String, seenAt: Integer) -> Harmat.Database.Insert do
+    let row = {id: userId, seen_at: seenAt}
+    Database.insert(users()).values(row, columns: [:id, :seen_at])
+  end
+
+  let updating(userId: String, seenAt: Integer) -> Harmat.Database.Update do
+    let changes = {seen_at: seenAt}
+    Database.update(users()).set(changes, columns: [:seen_at])
+      .where(users().textColumn(:id) == userId)
+  end
+end
+
+let insertQuery(userId: String, seenAt: Integer) -> Harmat.Database.Insert = inserting(userId, seenAt)
+let updateQuery(userId: String, seenAt: Integer) -> Harmat.Database.Update = updating(userId, seenAt)
+
+record Echoing do
+  label : String = "echo"
+end
+
+make Echoing, implement: Harmat.Connection do
+  foul run(statement: Statement) -> Result<Integer, String> = Error("${statement.statement} ${statement.params}")
+  foul runMany(statement: Statement) -> Result<Integer, String> = Error("${statement.statement} ${statement.params}")
+  foul ask(statement: Statement) -> Result<[[String]], String> = Error("${statement.statement} ${statement.params}")
+  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> = work()
+end
+
+main do
+  with Harmat.Connection = Echoing {} do
+    match insertQuery("ada", 2).run do
+      Error(reason) => IO.printLine(reason)
+      Ok(_) => IO.printLine("unexpected insert result")
+    end
+    match insertQuery("bob", 7).run do
+      Error(reason) => IO.printLine(reason)
+      Ok(_) => IO.printLine("unexpected insert result")
+    end
+    match updateQuery("ada", 3).run do
+      Error(reason) => IO.printLine(reason)
+      Ok(_) => IO.printLine("unexpected update result")
+    end
+    match updateQuery("bob", 9).run do
+      Error(reason) => IO.printLine(reason)
+      Ok(_) => IO.printLine("unexpected update result")
+    end
+  end
+end

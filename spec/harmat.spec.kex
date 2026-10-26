@@ -97,13 +97,18 @@ describe("Harmat.Odbc statements") do
   it("inserts typed column values as bound parameters") do
     let q = Harmat.Odbc.inserting(users, [Harmat.Schema.text("name").storing("ada"), Harmat.Schema.integer("age").storing(36)])
     Assert.equal(q.statement, "INSERT INTO users (name, age) VALUES (?, CAST(? AS BIGINT))")
-    Assert.equal(q.params, ["ada", "36"])
+    # The values as given: text, and a number.
+    let age : Any = 36
+    Assert.equal(q.params.count, 2)
+    Assert.equal(q.params.at(1), Just(age))
   end
 
   it("updates the rows a condition selects") do
     let q = Harmat.Odbc.updating(users, [Harmat.Schema.integer("age").storing(37)], [Harmat.Schema.text("name") == "ada"])
     Assert.equal(q.statement, "UPDATE users SET age = CAST(? AS BIGINT) WHERE name = ?")
-    Assert.equal(q.params, ["37", "ada"])
+    let age : Any = 37
+    Assert.equal(q.params.count, 2)
+    Assert.equal(q.params.at(0), Just(age))
   end
 
   it("deletes and selects with the same conditions") do
