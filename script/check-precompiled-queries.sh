@@ -10,7 +10,7 @@ work=$(mktemp -d "${TMPDIR:-/tmp}/harmat-precompiled.XXXXXX")
 trap 'rm -rf "$work"' EXIT HUP INT TERM
 mkdir "$work/core"
 
-"$kex" -E --no-colors --collapse-report --source-root "$repo/src" \
+"$kex" --emit-core --no-colors --collapse-report --source-root "$repo/src" \
   -o "$work/core" "$fixture" > "$work/compile.log" 2>&1 || {
   cat "$work/compile.log"
   exit 1
@@ -89,7 +89,7 @@ for mode in -R -r; do
 done
 
 insertFixture="$repo/script/fixtures/precompiledinsert.kex"
-"$kex" -E --no-colors --collapse-report --source-root "$repo/src" \
+"$kex" --emit-core --no-colors --collapse-report --source-root "$repo/src" \
   -o "$work/core" "$insertFixture" > "$work/insert-compile.log" 2>&1 || {
   cat "$work/insert-compile.log"
   exit 1
