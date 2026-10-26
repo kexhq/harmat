@@ -681,8 +681,8 @@ make Select do
     this.all.flatMap { |rows| Harmat.Database.selectedAll(rows, column, as) }
   end
 
-  # Runs the query for one row, as a record of type `as`: the first, or
-  # `None`.
+  # Runs the query for one row, as a record or selected value of type `as`:
+  # the first, or `None`.
   foul first(as: T) -> Result<T?, String> = this.first(as: as, renamed: {})
 
   foul first(as: T, renamed: {String: String}) -> Result<T?, String> do
