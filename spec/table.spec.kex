@@ -22,10 +22,12 @@ let addCredit = Migration.define :add_credit, follows: :create_users do
 end
 
 type Shade = Light | Dark | MidnightBlue
+type Mixed = Ready | ErrorCode(Integer)
 
 describe("Harmat.Table") do
   it("lets in the constructors of a sum type, by their names in snake case") do
     Assert.equal(Harmat.Column.choices(Type.of(Shade)), ["light", "dark", "midnight_blue"])
+    Assert.equal(Harmat.Column.choices(Type.of(Mixed)), ["ready"])
     let themes = Table.define :themes do |t|
       t.text(:shade, oneOf: Harmat.Column.choices(Type.of(Shade)))
     end

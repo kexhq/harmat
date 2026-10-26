@@ -208,7 +208,9 @@ end
 #
 #   t.text(:kind, oneOf: Harmat.Column.choices(Type.of(Kind)))
 choices : Type -> [String]
-let choices(kind) = kind.constructorValues
+let choices(kind) = kind.constructors
+  .filter { |constructor| constructor.arity == 0 }
+  .map { |constructor| snaked(constructor.name) }
 
 # The column as the database has it: what it is for and what it refers to
 # taken away, since none of it is in the SQL.
