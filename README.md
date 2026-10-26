@@ -206,7 +206,7 @@ Database.all(users)                                     # every row
 Database.find(users, "u1")                              # the row with this primary key, or None
 Database.findBy(users, {email: address})                # the first row with these values
 Database.exists?(users, {email: address})               # whether there is one
-Database.select().from(users).by({owner: "ada"}).pluck(:email)
+Database.select([:email]).from(users).by({owner: "ada"}).all(as: String)
 Database.insertAll(memberships, [first, second])        # one parameterized ODBC batch
 Database.belongingTo(posts, users, ids, via: :author)   # a has-many for many rows at once
 ```

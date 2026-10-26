@@ -354,7 +354,7 @@ describe("Harmat.Database against a database") do
       )
       Assert.equal(Database.select().from(users).by({id: "u3"}).first(as: Account).map { |found| found.map { |account| account.email } }, Ok(Just("eve@example.com")))
       Assert.equal(Database.find(users, "u3", as: Account).map { |found| found.map { |account| account.credit } }, Ok(Just(7)))
-      Assert.equal(Database.select().from(users).by({owner: "bob"}).orderBy([:id]).pluck(:email), Ok(["bob@example.com", "eve@example.com"]))
+      Assert.equal(Database.select([:email]).from(users).by({owner: "bob"}).orderBy([:id]).all(as: String), Ok(["bob@example.com", "eve@example.com"]))
       Assert.equal(Database.exists?(users, {owner: "bob"}), Ok(true))
       Assert.equal(Database.exists?(users, {owner: "nobody"}), Ok(false))
       Assert.equal(Database.insertAll(users, [{id: "u5", email: "f@x", owner: "f"}, {id: "u6", email: "g@x", owner: "g"}]), Ok(2))
@@ -445,7 +445,7 @@ describe("Harmat.Database against a database") do
     with Harmat.Connection = Direct { connection: connection } do
       with Harmat.Logger = Telling {} do
         let row = { |id| {id: id, email: "${id}@example.com", owner: "ada"} }
-        let ada = { Database.select([:id]).from(users).where(owner == "ada").orderBy([:id]).pluck(:id) }
+        let ada = { Database.select([:id]).from(users).where(owner == "ada").orderBy([:id]).all(as: String) }
         Database.insert(users).values(row("u1")).run.try
         told()
 
