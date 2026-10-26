@@ -82,6 +82,11 @@ make Direct, implement: Harmat.Connection do
     return Harmat.Odbc.execute(@connection, statement)
   end
 
+  foul runMany(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
+    return Harmat.Odbc.executingMany(@connection, statement) if Harmat.Database.ongoing().set?
+    return Harmat.Odbc.executeMany(@connection, statement)
+  end
+
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
     return Harmat.Odbc.querying(@connection, statement) if Harmat.Database.ongoing().set?
     return Harmat.Odbc.query(@connection, statement)
@@ -132,11 +137,19 @@ record Select do
   conditions : [Cond] = []
   order : [String] = []
   cap : Integer? = None
+  # The statement the query is — for every row, for the first, and for how
+  # many there are — written by each step of the builder (`prepared`), so
+  # that a chain the compiler folds already holds its SQL.
+  built : Result<Statement, String> = Error("select() was not given a table: add .from(table)")
+  builtFirst : Result<Statement, String> = Error("select() was not given a table: add .from(table)")
+  builtCount : Result<Statement, String> = Error("select() was not given a table: add .from(table)")
 end
 
 record Insert do
   target : Definition
   row : {Atom: Any} = {}
+  ordered : [Atom] = []
+  built : Result<Statement, String>? = None
 end
 
 record Update do
@@ -144,12 +157,15 @@ record Update do
   target : Definition
   changes : {Atom: Any} = {}
   conditions : [Cond] = []
+  ordered : [Atom] = []
+  built : Result<Statement, String>? = None
 end
 
 record Delete do
   confines : [Cond] = []
   target : Definition
   conditions : [Cond] = []
+  built : Statement? = None
 end
 
 # --- Transactions -----------------------------------------------------------
@@ -249,15 +265,54 @@ foul all(table: Definition) -> Result<[{String: String}], String> = select().fro
 # The same, as records of type `as`.
 foul all(table: Definition, as: T) -> Result<[T], String> = select().from(table).all(as: as)
 
-# Inserts rows one after another, stopping at the first that fails: how
-# many went in, or why one did not. Inside a transaction, a failure undoes
-# them all.
+# Inserts rows with one parameterized ODBC batch: how many went in, or why
+# the batch failed. Rows use the first row's columns, in their map order.
 foul insertAll(table: Definition, rows: [{Atom: Any}]) -> Result<Integer, String> do
   match rows do
     [] => return Ok(0)
-    [row | rest] => do
-      insert(table).values(row).run.try
-      return insertAll(table, rest).map { |count| count + 1 }
+    [first | rest] => do
+      let columns = first.entries.map { |entry| match entry do (key, _) => key end }
+      let firstFields = assignedOrdered(table, first, columns)
+      match firstFields do
+        Error(reason) => return Error(reason)
+        Ok(fields) => do
+          let rowsOfFields = rest.reduce(Ok([fields])) { |collected, row|
+            match collected do
+              Error(reason) => Error(reason)
+              Ok(done) => match row.entries.count == columns.count do
+                false => Error("all rows in insertAll must have the same columns")
+                true => assignedOrdered(table, row, columns).map { |newFields| done + [newFields] }
+              end
+            end
+          }
+          match rowsOfFields do
+            Error(reason) => return Error(reason)
+            Ok(allFields) => do
+              let initial = fields.map { |field| match field do (_, value) => [bound(value)] end }
+              let batch = allFields.drop(1).reduce(Ok(initial)) { |grouped, row|
+                match grouped do
+                  Error(reason) => Error(reason)
+                  Ok(done) => do
+                    let values = row.map { |field| match field do (_, value) => bound(value) end }
+                    Ok(done.zip(values).map { |pair| match pair do (column, value) => column + [value] end })
+                  end
+                end
+              }
+              match batch do
+                Error(reason) => return Error(reason)
+                Ok(params) => do
+                  let shape = Harmat.Odbc.inserting(table.table, fields)
+                  let statement = Statement { statement: shape.statement, params: params }
+                  match ranMany(statement) do
+                    Ok(count) => return Ok(count)
+                    Error(_) => return insertEach(table, rows)
+                  end
+                end
+              end
+            end
+          end
+        end
+      end
     end
   end
 end
@@ -419,80 +474,171 @@ end
 
 # --- Starting a query -------------------------------------------------------
 
-# Every column of the table named in `from`, or only the ones listed.
-let select(columns: [Atom] = []) -> Select = Select { columns: columns.map { |column| named(column) } }
-
-let insert(target: Definition) -> Insert = Insert { target: target }
-
-let update(target: Definition) -> Update = Update { target: target }
-
-let delete(target: Definition) -> Delete = Delete { target: target }
-
 # Statements that all also carry `condition`.
 let within(condition: Cond) -> Harmat.Confined.Confined = Harmat.Confined.Confined { confines: [condition] }
 
-make Select do
-  let from(source: Definition) -> Select = Select { ...this, source: Just(source) }
+# A query is built while the program is compiled, wherever that can be
+# done: a chain of these steps whose tables, columns and conditions are
+# known there — the values compared with may be anything, they ride along as
+# parameters — becomes the SELECT, INSERT, UPDATE or DELETE it always was,
+# with its SQL written, and the program only sends it. A step whose SQL
+# shape needs a runtime value (the count of an `in` list, a runtime `limit`,
+# the columns of `by`)
+# is taken at runtime instead, the same way. `kex --collapse-report` shows
+# which were which.
+compiled do
+  let insert(target: Definition) -> Insert = Insert { target: target }
 
-  # Narrows the rows; several `where`s all have to hold.
-  let where(condition: Cond) -> Select = Select { ...this, conditions: @conditions + [condition] }
+  make Insert do
+    let values(row: {Atom: Any}) -> Insert = Harmat.Database.preparedInsert(Insert { ...this, row: row }, [])
+    let values(row: {Atom: Any}, columns: [Atom]) -> Insert = Harmat.Database.preparedInsert(Insert { ...this, row: row }, columns)
+  end
 
-  # Narrows the rows to those with these values in these columns, each value
-  # written the way its declared column stores it. A name the table does not
-  # declare matches no row.
-  let by(values: {Atom: Any}) -> Select do
-    match @source do
-      None => this
-      Just(source) => Select { ...this, conditions: @conditions + Harmat.Database.matches(source, values) }
+  # Preserve one column order for the SQL and its runtime parameters. Map
+  # iteration order need not be the same in the compiler and on BEAM.
+  let preparedInsert(query: Insert, columns: [Atom]) -> Insert do
+    let ordered = columns.empty? then query.row.keys else columns
+    let built = Harmat.Database.shapeFields(query.target, ordered)
+      .map { |fields| Harmat.Odbc.inserting(query.target.table, fields) }
+    Insert { ...query, ordered: ordered, built: Just(built) }
+  end
+
+  let shapeFields(target: Definition, ordered: [Atom]) -> Result<[(String, Value)], String> do
+    ordered.reduce(Ok([])) { |fields, key|
+      match fields do
+        Error(reason) => Error(reason)
+        Ok(done) => match target.columns.find { |column| column.label == named(key) } do
+          None => Error("${target.label} has no column ${named(key)}")
+          Just(column) => do
+            let blank = match column.storage do
+              Characters => Text("")
+              Flag => Text("")
+              _ => Whole(0)
+            end
+            Ok(done + [(column.label, blank)])
+          end
+        end
+      end
+    }
+  end
+
+  let update(target: Definition) -> Update = Update { target: target }
+
+  make Update do
+    let set(changes: {Atom: Any}) -> Update = Harmat.Database.preparedUpdate(Update { ...this, changes: changes }, [])
+    let set(changes: {Atom: Any}, columns: [Atom]) -> Update = Harmat.Database.preparedUpdate(Update { ...this, changes: changes }, columns)
+
+    let where(condition: Cond) -> Update = Harmat.Database.preparedUpdate(Update { ...this, conditions: @conditions + [condition] }, @ordered)
+
+    # Only the rows with these values in these columns, as `Select.by`.
+    let by(values: {Atom: Any}) -> Update = Harmat.Database.preparedUpdate(Update { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) }, @ordered)
+  end
+
+  let preparedUpdate(query: Update, columns: [Atom]) -> Update do
+    let ordered = columns.empty? then query.changes.keys else columns
+    let built = Harmat.Database.shapeFields(query.target, ordered)
+      .map { |fields| Harmat.Odbc.updating(query.target.table, fields, query.confines + query.conditions) }
+    Update { ...query, ordered: ordered, built: Just(built) }
+  end
+
+  let delete(target: Definition) -> Delete = preparedDelete(Delete { target: target })
+
+  make Delete do
+    let where(condition: Cond) -> Delete = Harmat.Database.preparedDelete(Delete { ...this, conditions: @conditions + [condition] })
+
+    # Only the rows with these values in these columns, as `Select.by`.
+    let by(values: {Atom: Any}) -> Delete = Harmat.Database.preparedDelete(Delete { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) })
+
+    let statement -> Statement = Harmat.Odbc.deleting(@target.table, @confines + @conditions)
+  end
+
+  let preparedDelete(query: Delete) -> Delete = Delete { ...query, built: Just(query.statement) }
+
+  # Every column of the table named in `from`, or only the ones listed.
+  let select(columns: [Atom] = []) -> Select = Select { columns: columns.map { |column| named(column) } }
+
+  make Select do
+    let from(source: Definition) -> Select = Harmat.Database.prepared(Select { ...this, source: Just(source) })
+
+    # Narrows the rows; several `where`s all have to hold.
+    let where(condition: Cond) -> Select = Harmat.Database.prepared(Select { ...this, conditions: @conditions + [condition] })
+
+    # Narrows the rows to those with these values in these columns, each
+    # value written the way its declared column stores it. A name the table
+    # does not declare matches no row.
+    let by(values: {Atom: Any}) -> Select do
+      match @source do
+        None => this
+        Just(source) => Harmat.Database.prepared(Select { ...this, conditions: @conditions + Harmat.Database.matches(source, values) })
+      end
     end
-  end
 
-  # Sorts the rows: `orderBy([:email])`, or largest first with
-  # `orderBy(descending: [:sent_at])` — with `limit`, the newest rows of a
-  # table. Given both, the ascending columns come first.
-  let orderBy(columns: [Atom] = [], descending: [Atom] = []) -> Select do
-    let rising = columns.map { |column| named(column) }
-    let falling = descending.map { |column| "${named(column)} DESC" }
-    Select { ...this, order: rising + falling }
-  end
+    # Sorts the rows: `orderBy([:email])`, or largest first with
+    # `orderBy(descending: [:sent_at])` — with `limit`, the newest rows of a
+    # table. Given both, the ascending columns come first.
+    let orderBy(columns: [Atom] = [], descending: [Atom] = []) -> Select do
+      let rising = columns.map { |column| named(column) }
+      let falling = descending.map { |column| "${named(column)} DESC" }
+      Harmat.Database.prepared(Select { ...this, order: rising + falling })
+    end
 
-  let limit(count: Integer) -> Select = Select { ...this, cap: Just(count) }
+    let limit(count: Integer) -> Select = Harmat.Database.prepared(Select { ...this, cap: Just(count) })
 
-  # The statement this query is.
-  let statement -> Result<Statement, String> do
-    match @source do
-      None => Error("select() was not given a table: add .from(table)")
-      Just(source) => do
-        let columns = @columns.empty? then source.names else @columns
-        let chosen = Harmat.Odbc.selecting(source.table, columns, @confines + @conditions, @order)
-        match @cap do
-          Just(count) => Ok(Statement { statement: "${chosen.statement} LIMIT ${count}", params: chosen.params })
-          None => Ok(chosen)
+    # The statement this query is.
+    let statement -> Result<Statement, String> do
+      match @source do
+        None => Error("select() was not given a table: add .from(table)")
+        Just(source) => do
+          let columns = @columns.empty? then source.names else @columns
+          let chosen = Harmat.Odbc.selecting(source.table, columns, @confines + @conditions, @order)
+          match @cap do
+            Just(count) => Ok(Statement { statement: "${chosen.statement} LIMIT ${count}", params: chosen.params })
+            None => Ok(chosen)
+          end
         end
       end
     end
   end
 
+  # A query with its statements written for what it now is.
+  let prepared(query: Select) -> Select do
+    let counting : Result<Statement, String> = match query.source do
+      None => Error("select() was not given a table: add .from(table)")
+      Just(source) => Ok(Harmat.Odbc.counting(source.table, [], query.confines + query.conditions))
+    end
+    Select {
+      ...query,
+      built: query.statement,
+      builtFirst: Select { ...query, cap: Just(1) }.statement,
+      builtCount: counting
+    }
+  end
+end
+
+make Select do
   # Runs the query: every row, as a map from column name to text.
-  foul all -> Result<[{String: String}], String> do
-    match this.statement do
+  foul all -> Result<[{String: String}], String> = this.rows(@built)
+
+  # Runs the query for one row: the first, or `None`.
+  foul first -> Result<{String: String}?, String> = this.rows(@builtFirst).map { |rows| rows.first }
+
+  # Runs the query for one column: its value in every row.
+  foul pluck(column: Atom) -> Result<[String], String> do
+    let name = named(column)
+    let only = Select { ...this, columns: [name] }
+    return only.rows(only.statement).map { |rows| rows.map { |row| row.get(name).or("") } }
+  end
+
+  # Runs one of the statements this query is, each row as a map from column
+  # name to text.
+  foul rows(chosen: Result<Statement, String>) -> Result<[{String: String}], String> do
+    match chosen do
       Error(reason) => return Error(reason)
       Ok(built) => do
         let names = @columns.empty? then @source.map { |source| source.names }.or([]) else @columns
         return asked(built).map { |rows| rows.map { |cells| keyed(names, cells) } }
       end
     end
-  end
-
-  # Runs the query for one row: the first, or `None`.
-  foul first -> Result<{String: String}?, String> do
-    return this.limit(1).all.map { |rows| rows.first }
-  end
-
-  # Runs the query for one column: its value in every row.
-  foul pluck(column: Atom) -> Result<[String], String> do
-    let name = named(column)
-    return Select { ...this, columns: [name] }.all.map { |rows| rows.map { |row| row.get(name).or("") } }
   end
 
   # Runs the query: every row, as a record of type `as` (see the top of
@@ -519,12 +665,9 @@ make Select do
   # Runs the query for how many rows match. The columns, order and limit
   # asked for do not count.
   foul count -> Result<Integer, String> do
-    match @source do
-      None => return Error("select() was not given a table: add .from(table)")
-      Just(source) => do
-        let built = Harmat.Odbc.counting(source.table, [], @confines + @conditions)
-        return asked(built).map { |rows| whole(rows.first.or([]).first.or("0")) }
-      end
+    match @builtCount do
+      Error(reason) => return Error(reason)
+      Ok(built) => return asked(built).map { |rows| whole(rows.first.or([]).first.or("0")) }
     end
   end
 
@@ -551,8 +694,6 @@ end
 
 make Insert do
   # The row to insert, by column name: `{id: id, email: email}`.
-  let values(row: {Atom: Any}) -> Insert = Insert { ...this, row: row }
-
   # The row to insert, from a record: each of its fields into the column
   # of its name in snake case, where the table has one, and `extra` for the
   # columns the record does not carry.
@@ -569,7 +710,7 @@ make Insert do
           (key, field) => row.put(key, field)
         end
       }
-    Insert { ...this, row: extra.entries.reduce(fields) { |row, entry|
+    Insert { ...this, built: None, ordered: [], row: extra.entries.reduce(fields) { |row, entry|
       match entry do
         (key, field) => row.put(key, field)
       end
@@ -582,50 +723,76 @@ make Insert do
 
   # Runs the insert; the number of rows inserted.
   foul run -> Result<Integer, String> do
-    match this.statement do
-      Error(reason) => return Error(reason)
-      Ok(built) => return ran(built)
+    match @built do
+      None => match this.statement do
+        Error(reason) => return Error(reason)
+        Ok(statement) => return ran(statement)
+      end
+      Just(Error(reason)) => return Error(reason)
+      Just(Ok(shape)) => match assignedOrdered(@target, @row, @ordered) do
+        Error(reason) => return Error(reason)
+        Ok(fields) => do
+          let params = fields.map { |field| match field do
+            (_, value) => bound(value)
+          end }
+          return ran(Statement { statement: shape.statement, params: params })
+        end
+      end
     end
   end
 end
 
 make Update do
   # The columns to change, by name: `{email: email}`.
-  let set(changes: {Atom: Any}) -> Update = Update { ...this, changes: changes }
-
-  let where(condition: Cond) -> Update = Update { ...this, conditions: @conditions + [condition] }
-
-  # Only the rows with these values in these columns, as `Select.by`.
-  let by(values: {Atom: Any}) -> Update = Update { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) }
-
   let statement -> Result<Statement, String> do
     assigned(@target, @changes).map { |fields| Harmat.Odbc.updating(@target.table, fields, @confines + @conditions) }
   end
 
   # Runs the update; the number of rows it changed.
   foul run -> Result<Integer, String> do
-    match this.statement do
-      Error(reason) => return Error(reason)
-      Ok(built) => return ran(built)
+    match @built do
+      None => match this.statement do
+        Error(reason) => return Error(reason)
+        Ok(statement) => return ran(statement)
+      end
+      Just(Error(reason)) => return Error(reason)
+      Just(Ok(shape)) => match assignedOrdered(@target, @changes, @ordered) do
+        Error(reason) => return Error(reason)
+        Ok(fields) => do
+          let params = fields.map { |field| match field do
+            (_, value) => bound(value)
+          end } + shape.params.drop(@ordered.count)
+          return ran(Statement { statement: shape.statement, params: params })
+        end
+      end
     end
   end
 end
 
 make Delete do
-  let where(condition: Cond) -> Delete = Delete { ...this, conditions: @conditions + [condition] }
-
-  # Only the rows with these values in these columns, as `Select.by`.
-  let by(values: {Atom: Any}) -> Delete = Delete { ...this, conditions: @conditions + Harmat.Database.matches(@target, values) }
-
-  let statement -> Statement = Harmat.Odbc.deleting(@target.table, @confines + @conditions)
-
   # Runs the delete; the number of rows it removed.
   foul run -> Result<Integer, String> do
-    return ran(this.statement)
+    match @built do
+      Just(statement) => return ran(statement)
+      None => return ran(this.statement)
+    end
   end
 end
 
 private do
+  # The slow path is used only when a driver's batch fails. It keeps the
+  # historical behavior: rows before the first failing row remain inserted
+  # unless the caller wrapped insertAll in a transaction.
+  foul insertEach(table: Definition, rows: [{Atom: Any}]) -> Result<Integer, String> do
+    match rows do
+      [] => return Ok(0)
+      [row | rest] => do
+        insert(table).values(row).run.try
+        return insertEach(table, rest).map { |count| count + 1 }
+      end
+    end
+  end
+
   # A SELECT, run and timed, and told to the logger (`Harmat.Logger`) —
   # or answered from the cache, and told as that.
   foul asked(statement: Statement) -> Result<[[String]], String> do
@@ -706,6 +873,21 @@ private do
     return changed
   end
 
+  # A batch of writes, run and timed as one driver call.
+  foul ranMany(statement: Statement) -> Result<Integer, String> do
+    let started = DateTime.epochNanos()
+    forget()
+    let changed = Harmat.Connection.runMany(statement)
+    let outcome = match changed do
+      Ok(count) => "${count} changed"
+      Error(reason) => "failed: ${reason}"
+    end
+    let micros = (DateTime.epochNanos() - started) / 1000
+    count(1, 0, micros)
+    Harmat.Logger.queried(statement, micros, outcome)
+    return changed
+  end
+
   # A count as a database gives it back: "3", or "3.0" from some drivers.
   whole : String -> Integer
   let whole(text) = text.split(".").first.or("0").to(Integer).or(0)
@@ -730,6 +912,24 @@ private do
       end
     }
   end
+
+  assignedOrdered : Definition -> {Atom: Any} -> [Atom] -> Result<[(String, Value)], String>
+  let assignedOrdered(target, given, ordered) do
+    ordered.reduce(Ok([])) { |fields, key|
+      match (fields, given.get(key)) do
+        (Error(reason), _) => Error(reason)
+        (Ok(_), None) => Error("${target.label} has no value for ${named(key)}")
+        (Ok(done), Just(value)) => match target.columns.find { |column| column.label == named(key) } do
+          None => Error("${target.label} has no column ${named(key)}")
+          Just(column) => Ok(done + [(column.label, stored(column.storage, value))])
+        end
+      end
+    }
+  end
+
+  bound : Value -> Any
+  let bound(Text(value)) = value
+  let bound(Whole(value)) = value
 
   # The condition that a column holds a value, written the way the column
   # stores it.

@@ -79,9 +79,12 @@ module Harmat.Log do
     let elapsed(micros) = "${micros / 1000}.${micros % 1000 / 100}ms"
 
     # The values a statement was run with, a secret shown as [FILTERED].
-    shown : [String] -> String
+    shown : [Any] -> String
     let shown(params) do
-      let quoted = params.map { |value| secret?(value) then "[FILTERED]" else "\"${value.take(120)}\"" }
+      let quoted = params.map do |value|
+        let displayed = "${value}"
+        secret?(displayed) then "[FILTERED]" else "\"${displayed.take(120)}\""
+      end
       "[${quoted.join(", ")}]"
     end
 

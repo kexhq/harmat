@@ -57,6 +57,10 @@ make Echoing, implement: Harmat.Connection do
     return Error("${statement.statement} ${statement.params}")
   end
 
+  foul runMany(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
+    return Ok(statement.params.first.map { |values| values.count }.or(0))
+  end
+
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
     return Error("${statement.statement} ${statement.params}")
   end
@@ -87,6 +91,19 @@ describe("Harmat.Database statements") do
     with Harmat.Connection = Echoing {} do
       Assert.equal(Database.select([:id]).from(users).where(owner == "ada").where(credit == 5).all,
                    Error("SELECT id FROM users WHERE owner = ? AND credit = ? [ada, 5]"))
+    end
+  end
+
+  it("batches inserts as one statement with values grouped by column") do
+    with Harmat.Connection = Echoing {} do
+      Assert.equal(
+        Database.insertAll(users, [
+          {id: "u1", email: "a@x", owner: "ada"},
+          {id: "u2", email: "b@x", owner: "bob"}
+        ]),
+        Ok(2)
+      )
+      Assert.truthy(Database.insertAll(users, [{id: "u1"}, {email: "b@x"}]).error?)
     end
   end
 
@@ -159,6 +176,11 @@ describe("Harmat.Database statements") do
       Assert.equal(Database.findBy(users, {email: "a@b.co"}), Error("SELECT id, email, owner, credit FROM users WHERE email = ? LIMIT 1 [a@b.co]"))
       Assert.equal(
         Database.insert(users).record(Account { id: "u9", email: "e", credit: 2, standing: GroupAdmin }, extra: {owner: GroupAdmin}).run,
+        Error("INSERT INTO users (credit, email, id, owner) VALUES (CAST(? AS BIGINT), ?, ?, ?) [2, e, u9, group_admin]")
+      )
+      Assert.equal(
+        Database.insert(users).values({id: "stale"})
+          .record(Account { id: "u9", email: "e", credit: 2, standing: GroupAdmin }, extra: {owner: GroupAdmin}).run,
         Error("INSERT INTO users (credit, email, id, owner) VALUES (CAST(? AS BIGINT), ?, ?, ?) [2, e, u9, group_admin]")
       )
       # A constructor is written by its name in snake case.

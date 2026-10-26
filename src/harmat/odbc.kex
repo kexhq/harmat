@@ -30,9 +30,14 @@ using Harmat.Schema, only: [Table, Cond, EqCond, InCond, CmpCond, NullCond, AnyC
 # The fields are `statement` and `params`, as in `Harmat.Query.Query`, and
 # for the reason given there: a field called `text` is hijacked by any `text`
 # function in scope — Harmat.Schema's own column constructor, for one.
+#
+# `params` are the values as they were given, a String or an Integer: they
+# become text only when the statement is sent (`run`), so that a statement
+# can be built while the program is compiled, with values it does not know
+# yet (`Harmat.Database`'s builder, in `compiled do`).
 record Statement do
   statement : String
-  params : [String] = []
+  params : [Any] = []
 end
 
 # The two databases Harmat speaks to. Only serial primary keys render
@@ -103,6 +108,27 @@ foul execute(connection, statement) do
   match finish(connection, changed.ok?) do
     Error(reason) => return changed.ok? then Error(reason) else changed
     Ok(_) => return changed
+  end
+end
+
+# Runs one parameterized statement with a batch of values per placeholder.
+# ODBC drivers can execute these rows in one call; `params` is column-wise.
+executeMany : Any -> Statement -> Result<Integer, String>
+foul executeMany(connection, statement) do
+  let changed = executingMany(connection, statement)
+  match finish(connection, changed.ok?) do
+    Error(reason) => return changed.ok? then Error(reason) else changed
+    Ok(_) => return changed
+  end
+end
+
+executingMany : Any -> Statement -> Result<Integer, String>
+foul executingMany(connection, statement) do
+  match runMany(connection, statement) do
+    (:updated, :undefined) => Ok(0)
+    (:updated, count) => Ok(count)
+    (:selected, _, _) => Ok(0)
+    (:error, reason) => Error("${reasonText(reason)} — in: ${statement.statement}")
   end
 end
 
@@ -239,9 +265,9 @@ private do
   end
 
   # The values a condition binds, in the order of its holes.
-  bindings : Cond -> [String]
-  let bindings(EqCond(_, value)) = ["${value}"]
-  let bindings(InCond(_, values)) = values.map { |value| "${value}" }
+  bindings : Cond -> [Any]
+  let bindings(EqCond(_, value)) = [value]
+  let bindings(InCond(_, values)) = values
   let bindings(CmpCond(_, _, value)) = [bound(value)]
   let bindings(NullCond(_)) = []
   let bindings(AnyCond(parts)) = parts.flatMap { |part| bindings(part) }
@@ -251,9 +277,9 @@ private do
   let hole(Text(_)) = "?"
   let hole(Whole(_)) = "CAST(? AS BIGINT)"
 
-  bound : Value -> String
+  bound : Value -> Any
   let bound(Text(text)) = text
-  let bound(Whole(number)) = "${number}"
+  let bound(Whole(number)) = number
 
   # `odbc` wants charlists for SQL and one `{Type, [Value]}` per `?`.
   # The driver's own reference, out of what `connect` gave.
@@ -268,7 +294,16 @@ private do
       return BEAM.odbc.sql_query(held, statement.statement.bytes)
     end
     let bindings = statement.params.map { |value|
-      let column : [Any] = [value]
+      let column : [Any] = ["${value}"]
+      ((:sql_varchar, 8000), column)
+    }
+    return BEAM.odbc.param_query(held, statement.statement.bytes, bindings)
+  end
+
+  foul runMany(connection: Any, statement: Statement) -> Any do
+    let held = handle(connection)
+    let bindings = statement.params.map { |values|
+      let column : [Any] = values.map { |value| "${value}" }
       ((:sql_varchar, 8000), column)
     }
     return BEAM.odbc.param_query(held, statement.statement.bytes, bindings)

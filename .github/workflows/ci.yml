@@ -53,6 +53,9 @@ jobs:
       - name: Specs
         run: tey test
 
+      - name: Query precompilation acceptance
+        run: sh script/check-precompiled-queries.sh
+
   postgres:
     name: Specs on PostgreSQL
     runs-on: ubuntu-latest

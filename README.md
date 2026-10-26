@@ -207,7 +207,7 @@ Database.find(users, "u1")                              # the row with this prim
 Database.findBy(users, {email: address})                # the first row with these values
 Database.exists?(users, {email: address})               # whether there is one
 Database.select().from(users).by({owner: "ada"}).pluck(:email)
-Database.insertAll(memberships, [first, second])        # several rows, stopping at a failure
+Database.insertAll(memberships, [first, second])        # one parameterized ODBC batch
 Database.belongingTo(posts, users, ids, via: :author)   # a has-many for many rows at once
 ```
 
@@ -217,6 +217,12 @@ written the way its column stores it, so the plain equalities need no
 `ids`, grouped by the key each refers to, in one `IN` query; the column is
 the one `posts` declares, and `via:` picks one by name or column when
 several refer to the same table.
+
+`insertAll` sends one parameterized statement with one value list per column,
+so the driver can insert a batch in one call. Every row must have the same
+columns as the first row. If a driver rejects the batch, Harmat retries rows
+individually to preserve the usual stop-at-first-failure behavior; wrap it in
+`Database.transaction` when a failed batch must leave no rows behind.
 
 ### Records instead of rows
 
@@ -331,6 +337,10 @@ end
 make StoreConnection, implement: Harmat.Connection do
   foul run(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
     …   # INSERT, UPDATE, DELETE: the number of rows changed
+  end
+
+  foul runMany(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
+    …   # one statement with a list of values for each placeholder
   end
 
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
