@@ -271,6 +271,9 @@ describe("Harmat.Database statements") do
     with Harmat.Connection = Echoing {} do
       Assert.equal(Database.insert(users).values({id: "u1", email: "a@b.co", credit: 7}).run,
                    Error("INSERT INTO users (credit, email, id) VALUES (CAST(? AS BIGINT), ?, ?) [7, a@b.co, u1]"))
+      Assert.equal(Database.spelled(GroupAdmin), "group_admin")
+      Assert.equal(Database.insert(users).values({id: "u2", owner: GroupAdmin}).run,
+                   Error("INSERT INTO users (id, owner) VALUES (?, ?) [u2, group_admin]"))
     end
   end
 
