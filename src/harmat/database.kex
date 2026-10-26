@@ -435,7 +435,9 @@ let TRUTHS = ["TRUE", "true", "t", "1", "yes"]
 # The constructor of a sum type stored as `text`: `GroupChat` from
 # "group_chat".
 constructed : String -> Type -> Any?
-let constructed(text, kind) = kind.parse(text.trim).optional
+let constructed(text, kind) = kind.constructorNames
+  .find { |constructor| snaked(constructor) == text.trim }
+  .flatMap { |constructor| kind.variant(constructor).optional }
 
 # The conditions that a table's columns hold these values, each written as
 # its column stores it. A name the table does not declare matches no row.
