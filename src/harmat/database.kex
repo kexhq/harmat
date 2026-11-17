@@ -383,7 +383,7 @@ end
 # A record of type `kind` with its fields filled from a row (see the top of
 # this module). Not a decoder written for each record: the type's own
 # fields say what to read, as Kex knows them at run time.
-decoded : {String: String} -> T -> {String: String} -> Result<T, String>
+decoded : {String: String} -> Type<T> -> {String: String} -> Result<T, String>
 let decoded(row, kind, renamed) do
   let model = Type.of(kind)
   let values = model.fields.reduce({}) { |found, field|
@@ -399,14 +399,14 @@ let decoded(row, kind, renamed) do
 end
 
 # Each row as a record of type `kind`, or the first reason one could not be.
-decodedAll : [{String: String}] -> T -> {String: String} -> Result<[T], String>
+decodedAll : [{String: String}] -> Type<T> -> {String: String} -> Result<[T], String>
 let decodedAll(rows, kind, renamed) = rows.reduce(Ok([])) { |done, row|
   done.flatMap { |records| decoded(row, kind, renamed).map { |built| records + [built] } }
 }
 
 # A selected cell as its requested type. Used when a query projects one
 # column to a value instead of a record.
-selected : {String: String} -> String -> T -> Result<T, String>
+selected : {String: String} -> String -> Type<T> -> Result<T, String>
 let selected(row, column, as) do
   let kind = Type.of(as)
   match row.get(column) do
@@ -420,13 +420,13 @@ end
 
 # Every projected cell as its requested type, or the first one that cannot
 # be read.
-selectedAll : [{String: String}] -> String -> T -> Result<[T], String>
+selectedAll : [{String: String}] -> String -> Type<T> -> Result<[T], String>
 let selectedAll(rows, column, as) = rows.reduce(Ok([])) { |done, row|
   done.flatMap { |values| selected(row, column, as).map { |value| values + [value] } }
 }
 
 # A row that may not be there as a record that may not be.
-optionally : {String: String}? -> T -> {String: String} -> Result<T?, String>
+optionally : {String: String}? -> Type<T> -> {String: String} -> Result<T?, String>
 let optionally(row, kind, renamed) do
   match row do
     None => Ok(None)
