@@ -263,7 +263,7 @@ end
 foul all(table: Definition) -> Result<[{String: String}], String> = select().from(table).all
 
 # The same, as records of type `as`.
-foul all(table: Definition, as: T) -> Result<[T], String> = select().from(table).all(as: as)
+foul all(table: Definition, as: Type<T>) -> Result<[T], String> = select().from(table).all(as: as)
 
 # Inserts rows with one parameterized ODBC batch: how many went in, or why
 # the batch failed. Rows use the first row's columns, in their map order.
@@ -326,7 +326,7 @@ end
 foul findBy(table: Definition, values: {Atom: Any}) -> Result<{String: String}?, String> = select().from(table).by(values).first
 
 # The same, as a record of type `as`.
-foul findBy(table: Definition, values: {Atom: Any}, as: T) -> Result<T?, String> = select().from(table).by(values).first(as: as)
+foul findBy(table: Definition, values: {Atom: Any}, as: Type<T>) -> Result<T?, String> = select().from(table).by(values).first(as: as)
 
 # The row of a table whose primary key is `id`, or `None`.
 foul find(table: Definition, id: String) -> Result<{String: String}?, String> do
@@ -338,7 +338,7 @@ foul find(table: Definition, id: String) -> Result<{String: String}?, String> do
 end
 
 # The same, as a record of type `as`.
-foul find(table: Definition, id: String, as: T) -> Result<T?, String> do
+foul find(table: Definition, id: String, as: Type<T>) -> Result<T?, String> do
   return find(table, id).flatMap { |row| optionally(row, as, {}) }
 end
 
@@ -669,9 +669,9 @@ make Select do
   # (Two of each, not a `renamed` that defaults to `{}`: a method named like
   # another, called from another module without its defaulted argument, is
   # a call to a function that is not there — kexhq/kex#531.)
-  foul all(as: T) -> Result<[T], String> = this.all(as: as, renamed: {})
+  foul all(as: Type<T>) -> Result<[T], String> = this.all(as: as, renamed: {})
 
-  foul all(as: T, renamed: {String: String}) -> Result<[T], String> do
+  foul all(as: Type<T>, renamed: {String: String}) -> Result<[T], String> do
     let kind = Type.of(as)
     if kind.record?
       return this.all.flatMap { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
@@ -683,9 +683,9 @@ make Select do
 
   # Runs the query for one row, as a record or selected value of type `as`:
   # the first, or `None`.
-  foul first(as: T) -> Result<T?, String> = this.first(as: as, renamed: {})
+  foul first(as: Type<T>) -> Result<T?, String> = this.first(as: as, renamed: {})
 
-  foul first(as: T, renamed: {String: String}) -> Result<T?, String> do
+  foul first(as: Type<T>, renamed: {String: String}) -> Result<T?, String> do
     let kind = Type.of(as)
     if kind.record?
       return this.first.flatMap { |row| Harmat.Database.optionally(row, as, renamed) }
