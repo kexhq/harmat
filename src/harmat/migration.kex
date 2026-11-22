@@ -380,7 +380,7 @@ private do
     end
   end
 
-  foul undone(connection: Any, plans: [(String, [String])], names: [String]) -> Result<[String], String> do
+  foul undone(connection: Any, plans: [(String, [Operation])], names: [String]) -> Result<[String], String> do
     match plans do
       [] => Ok(names)
       [(name, plan) | rest] => match each(connection, plan) do
