@@ -94,7 +94,7 @@ make Direct, implement: Harmat.Connection do
 
   # Runs `work` with this connection left open between its statements,
   # then keeps all of it or none. A transaction begun inside one joins it.
-  foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
+  foul transaction(work: Block<Result<A, String>>) -> Result<A, String> do
     return work() if Harmat.Database.ongoing().set?
 
     Harmat.Database.begun(@connection)
@@ -180,7 +180,7 @@ end
 #     Database.insert(memberships).values(member).run.try
 #     Ok(organization)
 #   end
-foul transaction(work: Block<Result<Any, String>>) -> Result<Any, String> do
+foul transaction(work: Block<Result<A, String>>) -> Result<A, String> do
   let started = DateTime.epochNanos()
   Harmat.Logger.queried(Harmat.Odbc.plain("BEGIN"), 0, "")
   let outcome = Harmat.Connection.transaction(work)
@@ -252,9 +252,10 @@ end
 tally : Tally
 foul tally do
   let held : Any = BEAM.erlang.get(:harmat_tally)
-  return Tally {} if held == :undefined
-  let found : Tally = held
-  return found
+  match held do
+    found: Tally => found
+    _ => Tally {}
+  end
 end
 
 # --- The everyday queries ---------------------------------------------------

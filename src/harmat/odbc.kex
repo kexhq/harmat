@@ -310,11 +310,13 @@ private do
   end
 
   foul rowsOf(rows: Any) -> [[String]] do
-    let listed : [Any] = rows
-    return listed.map { |row|
-      let cells : [Any] = BEAM.erlang.tuple_to_list(row)
-      cells.map { |cell| cell == :null then "" else "${cell}" }
-    }
+    match rows do
+      listed: [Any] => listed.map do |row|
+        let cells : [Any] = BEAM.erlang.tuple_to_list(row)
+        cells.map { |cell| cell == :null then "" else "${cell}" }
+      end
+      _ => []
+    end
   end
 
   # A driver reports errors as a charlist; anything else is shown as it is.

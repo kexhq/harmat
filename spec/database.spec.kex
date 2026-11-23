@@ -58,7 +58,13 @@ make Echoing, implement: Harmat.Connection do
   end
 
   foul runMany(statement: Harmat.Odbc.Statement) -> Result<Integer, String> do
-    return Ok(statement.params.first.map { |values| values.count }.or(0))
+    let counted = statement.params.first.map do |values|
+      match values do
+        row: [Any] => row.count
+        _ => 0
+      end
+    end
+    return Ok(counted.or(0))
   end
 
   foul ask(statement: Harmat.Odbc.Statement) -> Result<[[String]], String> do
