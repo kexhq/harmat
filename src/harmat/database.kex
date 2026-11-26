@@ -340,7 +340,7 @@ end
 
 # The same, as a record of type `as`.
 foul find(table: Definition, id: String, as: Type<T>) -> Result<T?, String> do
-  return find(table, id).flatMap { |row| optionally(row, as, {}) }
+  return find(table, id).into { |row| optionally(row, as, {}) }
 end
 
 # The rows of `owner` that refer to any of `keys` of `target`, by the key each
@@ -389,7 +389,7 @@ let decoded(row, kind, renamed) do
   let model = Type.of(kind)
   let values = model.fields.reduce({}) { |found, field|
     let column = renamed.get(field.name).or(snaked(field.name))
-    let value = row.get(column).flatMap { |text| read(text, field.valueType) }
+    let value = row.get(column).into { |text| read(text, field.valueType) }
     match value do
       Just(held) => found.put(field.name, held)
       None => found
@@ -402,7 +402,7 @@ end
 # Each row as a record of type `kind`, or the first reason one could not be.
 decodedAll : [{String: String}] -> Type<T> -> {String: String} -> Result<[T], String>
 let decodedAll(rows, kind, renamed) = rows.reduce(Ok([])) { |done, row|
-  done.flatMap { |records| decoded(row, kind, renamed).map { |built| records + [built] } }
+  done.into { |records| decoded(row, kind, renamed).map { |built| records + [built] } }
 }
 
 # A selected cell as its requested type. Used when a query projects one
@@ -412,7 +412,7 @@ let selected(row, column, as) do
   let kind = Type.of(as)
   match row.get(column) do
     None => return Error("Selected column ${column} was not returned")
-    Just(text) => match read(text, kind).flatMap { |value| value.to(as) } do
+    Just(text) => match read(text, kind).into { |value| value.to(as) } do
       Just(value) => Ok(value)
       None => Error("Could not read ${column} as ${kind.showValue}: \"${text}\"")
     end
@@ -423,7 +423,7 @@ end
 # be read.
 selectedAll : [{String: String}] -> String -> Type<T> -> Result<[T], String>
 let selectedAll(rows, column, as) = rows.reduce(Ok([])) { |done, row|
-  done.flatMap { |values| selected(row, column, as).map { |value| values + [value] } }
+  done.into { |values| selected(row, column, as).map { |value| values + [value] } }
 }
 
 # A row that may not be there as a record that may not be.
@@ -450,7 +450,7 @@ let read(text, kind) do
       let parts = text.split(",").map { |part| part.trim }.reject { |part| part.empty? }
       let values = parts.map { |part| read(part, itemType) }
       return None if values.any? { |value| !value.set? }
-      Just(values.flatMap { |value| value.map { |item| [item] }.or([]) })
+      Just(values.into { |value| value.map { |item| [item] }.or([]) })
     end
     _ => kind.adt? then constructed(text, kind) else Just(text)
   end
@@ -465,7 +465,7 @@ let TRUTHS = ["TRUE", "true", "t", "1", "yes"]
 constructed : String -> Type -> Any?
 let constructed(text, kind) = kind.constructorNames
   .find { |constructor| snaked(constructor) == text.trim }
-  .flatMap { |constructor| kind.variant(constructor).optional }
+  .into { |constructor| kind.variant(constructor).optional }
 
 # The conditions that a table's columns hold these values, each written as
 # its column stores it. A name the table does not declare matches no row.
@@ -675,11 +675,11 @@ make Select do
   foul all(as: Type<T>, renamed: {String: String}) -> Result<[T], String> do
     let kind = Type.of(as)
     if kind.record?
-      return this.all.flatMap { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
+      return this.all.into { |rows| Harmat.Database.decodedAll(rows, as, renamed) }
     end
     return Error("Selecting a value needs exactly one column") if @columns.count != 1
     let column = @columns.first.or("")
-    this.all.flatMap { |rows| Harmat.Database.selectedAll(rows, column, as) }
+    this.all.into { |rows| Harmat.Database.selectedAll(rows, column, as) }
   end
 
   # Runs the query for one row, as a record or selected value of type `as`:
@@ -689,11 +689,11 @@ make Select do
   foul first(as: Type<T>, renamed: {String: String}) -> Result<T?, String> do
     let kind = Type.of(as)
     if kind.record?
-      return this.first.flatMap { |row| Harmat.Database.optionally(row, as, renamed) }
+      return this.first.into { |row| Harmat.Database.optionally(row, as, renamed) }
     end
     return Error("Selecting a value needs exactly one column") if @columns.count != 1
     let column = @columns.first.or("")
-    this.first.flatMap do |row|
+    this.first.into do |row|
       match row do
         None => Ok(None)
         Just(found) => Harmat.Database.selected(found, column, as).map { |value| Just(value) }
@@ -1000,5 +1000,10 @@ private do
   stored : Storage -> Any -> Value
   let stored(Characters, value) = Harmat.Schema.Text(Harmat.Database.spelled(value))
   let stored(Flag, value) = Harmat.Schema.Text(value == true then "TRUE" else "FALSE")
-  let stored(storage, value) = Harmat.Schema.Whole(value)
+  let stored(storage, value) do
+    match value do
+      number: Integer => Harmat.Schema.Whole(number)
+      _ => Harmat.Schema.Whole(whole("${value}"))
+    end
+  end
 end

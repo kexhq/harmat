@@ -241,7 +241,7 @@ let statements(step, dialect) = step.operations.map { |operation| sqlOf(operatio
 irreversible : [Migration] -> [String]
 irreversible : [Migration] -> Dialect -> [String]
 let irreversible(steps) = irreversible(steps, SQLite)
-let irreversible(steps, dialect) = steps.flatMap { |step|
+let irreversible(steps, dialect) = steps.into { |step|
   match opposites(step) do
     Ok(_) => []
     Error(reason) => [reason]
@@ -254,7 +254,7 @@ let irreversible(steps, dialect) = steps.flatMap { |step|
 # exactly one.
 heads : [Migration] -> [String]
 let heads(steps) do
-  let followed = steps.flatMap { |step| step.parents }
+  let followed = steps.into { |step| step.parents }
   steps.map { |step| step.name }.reject { |name| followed.contains?(name) }
 end
 
@@ -269,7 +269,7 @@ let ordered(steps) do
   return Ok([]) if steps.empty?
   return Error("migration names must be unique: ${repeated(names).join(", ")} appear more than once") if names.uniq.count != names.count
 
-  let strays = steps.flatMap { |step| step.parents.reject { |parent| names.contains?(parent) }.map { |parent| "\"${step.name}\" follows \"${parent}\"" } }
+  let strays = steps.into { |step| step.parents.reject { |parent| names.contains?(parent) }.map { |parent| "\"${step.name}\" follows \"${parent}\"" } }
   return Error("${strays.join(", ")}, which is not in the list") if !strays.empty?
 
   let roots = steps.filter { |step| step.parents.empty? }
@@ -325,7 +325,7 @@ foul rollback(connection, steps, count) do
       Ok(done) => do
         let targets = chain.filter { |step| done.contains?(step.name) }.reverse.take(count)
         let checked = targets.reduce(Ok([])) { |found, step|
-          found.flatMap { |plans|
+          found.into { |plans|
             opposites(step).map { |plan| plans + [(step.name, plan)] }
           }
         }
@@ -491,7 +491,7 @@ private do
     let tableSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = '${name}'")
     let indexSql = Harmat.Odbc.plain("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = '${name}' AND sql IS NOT NULL")
     let created = Harmat.Odbc.querying(connection, tableSql)
-      .map { |rows| rows.first.flatMap { |row| row.first }.or("") }
+      .map { |rows| rows.first.into { |row| row.first }.or("") }
       .try
     return Error("there is no table ${name} to change") if created.empty?
 

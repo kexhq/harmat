@@ -137,10 +137,10 @@ end
 # and their columns are declared. One to a table not among them is left out
 # (`drift` names it).
 relations : [Definition] -> [Relation]
-let relations(tables) = tables.flatMap { |owner|
+let relations(tables) = tables.into { |owner|
   owner.columns
     .filter { |column| !column.refers.empty? }
-    .flatMap { |column|
+    .into { |column|
       tables
         .filter { |target| target.label == column.refers }
         .map { |target|
@@ -169,7 +169,7 @@ let hasMany(tables, table) = relations(tables).filter { |relation| relation.targ
 # each reference to it, every other reference of the same row, called by
 # the table that one refers to.
 throughs : [Definition] -> Definition -> [Through]
-let throughs(tables, table) = hasMany(tables, table).flatMap { |first|
+let throughs(tables, table) = hasMany(tables, table).into { |first|
   belongsTo(tables, Definition { label: first.owner })
     .reject { |second| second.column == first.column }
     .map { |second|
@@ -189,7 +189,7 @@ let throughs(tables, table) = hasMany(tables, table).flatMap { |first|
 replayed : [Migration] -> Result<[Definition], String>
 let replayed(steps) do
   Harmat.Migration.ordered(steps).map { |history|
-    history.flatMap { |step| step.operations }.reduce([]) { |tables, operation| applied(tables, operation) }
+    history.into { |step| step.operations }.reduce([]) { |tables, operation| applied(tables, operation) }
   }
 end
 
@@ -200,7 +200,7 @@ let drift(declared, steps) do
   match replayed(steps) do
     Error(reason) => [reason]
     Ok(migrated) => do
-      let compared = declared.flatMap { |definition| compared(definition, migrated) }
+      let compared = declared.into { |definition| compared(definition, migrated) }
       compared + undeclared(declared, migrated) + dangling(declared) + unmatched(declared)
     end
   end
@@ -225,8 +225,8 @@ private do
 
   # A has-many that matches no reference back, or several.
   unmatched : [Definition] -> [String]
-  let unmatched(declared) = declared.flatMap { |table|
-    table.many.flatMap { |many|
+  let unmatched(declared) = declared.into { |table|
+    table.many.into { |many|
       let place = "${table.label} has many ${many.label}"
       match declared.find { |owner| owner.label == many.many } do
         None => ["${place} in ${many.many}, which is not declared"]
@@ -289,10 +289,10 @@ private do
   # References to a table that is not declared, or has no primary key, or
   # whose key is stored differently from the column referring to it.
   dangling : [Definition] -> [String]
-  let dangling(declared) = declared.flatMap { |owner|
+  let dangling(declared) = declared.into { |owner|
     owner.columns
       .filter { |column| !column.refers.empty? }
-      .flatMap { |column|
+      .into { |column|
         let place = "${owner.label}.${column.label}"
         match declared.find { |target| target.label == column.refers } do
           None => ["${place} refers to ${column.refers}, which is not declared"]
