@@ -51,7 +51,7 @@ module Harmat.Query do
     let groupSql(parts: [Harmat.Schema.Cond], joiner: String, nested?: Bool) -> (String, [Any]) do
       let pieces = parts.map { |part| Harmat.Query.condSql(part, true) }
       let inner = pieces.map { |piece| match piece do (text, _) => text end }.join(joiner)
-      let bound = pieces.flatMap { |piece| match piece do (_, vals) => vals end }
+      let bound = pieces.into { |piece| match piece do (_, vals) => vals end }
       let text = parts.count > 1 || nested? then "(${inner})" else inner
       (text, bound)
     end

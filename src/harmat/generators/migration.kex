@@ -59,7 +59,7 @@ end
 # The migrations no other one follows. A sound history has exactly one.
 heads : [Existing] -> [String]
 let heads(existing) do
-  let followed = existing.flatMap { |migration| migration.parents }
+  let followed = existing.into { |migration| migration.parents }
   existing.map { |migration| migration.name }.reject { |name| followed.contains?(name) }
 end
 
@@ -103,7 +103,7 @@ let listed(listing, number, name) do
         let before = lines.take(close)
         let last = before.last.or("")
         let joined = last.trim.endsWith?("[") || last.trim.endsWith?(",") then before else before.take(before.count - 1) + ["${last},"]
-        let noted = joined.flatMap { |line| line.contains?("← head") then [unpadded(line.replace("← head", "")), "#   ${DIRECTORY}/${numbered(number)}_${name}.kex        ← head"] else [line] }
+        let noted = joined.into { |line| line.contains?("← head") then [unpadded(line.replace("← head", "")), "#   ${DIRECTORY}/${numbered(number)}_${name}.kex        ← head"] else [line] }
         Just((noted + ["  ${entry}"] + lines.drop(close)).join("\n") + "\n")
       end
     end

@@ -35,7 +35,7 @@ end
 # The migrations already in the application.
 foul existing(directory: String) -> [Existing] do
   let files = FS.Directory.files(directory).or([]).map { |path| FS.Path.basename(path) }.filter { |file| file.endsWith?(".kex") }.sort
-  return files.flatMap { |file|
+  return files.into { |file|
     match Harmat.Generators.Migration.described(file, FS.File.read(FS.Path.join(directory, file)).or("")) do
       Just(migration) => [migration]
       None => []

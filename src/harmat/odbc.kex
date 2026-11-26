@@ -240,7 +240,7 @@ private do
   filtering : [Cond] -> Statement
   let filtering(conditions) do
     let clauses = conditions.map { |condition| clause(condition, false) }
-    let values = conditions.flatMap { |condition| bindings(condition) }
+    let values = conditions.into { |condition| bindings(condition) }
     let filter = clauses.empty? then "" else " WHERE ${clauses.join(" AND ")}"
     Statement { statement: filter, params: values }
   end
@@ -270,8 +270,8 @@ private do
   let bindings(InCond(_, values)) = values
   let bindings(CmpCond(_, _, value)) = [bound(value)]
   let bindings(NullCond(_)) = []
-  let bindings(AnyCond(parts)) = parts.flatMap { |part| bindings(part) }
-  let bindings(AllCond(parts)) = parts.flatMap { |part| bindings(part) }
+  let bindings(AnyCond(parts)) = parts.into { |part| bindings(part) }
+  let bindings(AllCond(parts)) = parts.into { |part| bindings(part) }
 
   hole : Value -> String
   let hole(Text(_)) = "?"
